@@ -27,6 +27,7 @@
 </div>
 
 ## News
+- [Jan 27, 2026]: 🌲🌲 Our paper is accepted by ICLR 2026.
 - [Sep 25, 2025]: Codebase released. (work in progress)
 
 ## Table of contents
@@ -73,9 +74,9 @@ conda create -n retriever python=3.10.13
 conda activate retriever
 pip install torch==2.6.0 torchvision==0.21.0 torchaudio==2.6.0  
 pip install transformers datasets pyserini
-## install the gpu version faiss to guarantee efficient RL rollout
+# install the gpu version faiss to guarantee efficient RL rollout
 pip install faiss-gpu==1.7.3
-## API function
+# API function
 pip install uvicorn fastapi
 ```
 
