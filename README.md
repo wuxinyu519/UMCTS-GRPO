@@ -84,46 +84,67 @@ data/models/e5-base-v2
 
 ## 6. Start Retriever
 
-On Delta Slurm, start the retriever first:
+Edit `local_retrieval_launch.sh` so the paths point to your local index,
+corpus, and E5 model:
 
 ```bash
-sbatch submit_retriever_2gpu.sbatch
+index_file=data/wiki18/e5_Flat.index
+corpus_file=data/wiki18/wiki-18.jsonl
+retriever_path=data/models/e5-base-v2
 ```
 
-The retriever job writes its URL to:
+Then start the retriever in the `retriever` environment:
+
+```bash
+conda activate retriever
+bash local_retrieval_launch.sh
+```
+
+By default, the training scripts expect:
 
 ```text
-run_info/retriever_url.txt
+http://127.0.0.1:8000/retrieve
 ```
 
-## 7. Submit UMCTS Training
+## 7. Start Ray For Training
 
-The training job uses 8 GPUs. The retriever uses separate GPUs and is not included in the training GPU count.
+UMCTS training follows the Tree-GRPO default launch style: start a Ray head with dashboard/job server, then run the training script. The retriever uses separate GPUs and is not included in the training GPU count.
 
-Example: 4 nodes x 2 A100 GPUs:
+For an 8-GPU training node:
 
 ```bash
-sbatch \
-  --partition=gpuA100x4 \
-  --nodes=4 \
-  --gpus-per-node=2 \
-  --cpus-per-task=16 \
-  --job-name=umcts_train_4x2 \
-  --export=ALL,N_NODES=4,N_GPUS_PER_NODE=2,RUN_ID=qwen25-15b_singlehop_4x2_run1 \
-  submit_train_8gpu.sbatch
+conda activate treegrpo
+ray stop --force
+ray start --head --node-ip-address=127.0.0.1 --dashboard-host=127.0.0.1 --dashboard-port=8265 --num-gpus=8
 ```
 
-Example: 1 node x 8 A100 GPUs:
+The UMCTS scripts submit work through Ray's default job server:
 
 ```bash
-sbatch \
-  --partition=gpuA100x8 \
-  --nodes=1 \
-  --gpus-per-node=8 \
-  --cpus-per-task=64 \
-  --job-name=umcts_train_8gpu \
-  --export=ALL,N_NODES=1,N_GPUS_PER_NODE=8,RUN_ID=qwen25-15b_singlehop_8gpu_run1 \
-  submit_train_8gpu.sbatch
+ray job submit --address=http://127.0.0.1:8265 -- python3 -m verl.trainer.main_ppo_format_ts ...
+```
+
+## 8. Run UMCTS Training
+
+Single-hop QA:
+
+```bash
+conda activate treegrpo
+RUN_ID=qwen25-15b_singlehop_run1 bash train_singlehopqa_umcts.sh
+```
+
+Multi-hop QA:
+
+```bash
+conda activate treegrpo
+RUN_ID=qwen25-15b_multihop_run1 bash train_multihopqa_umcts.sh
+```
+
+Web-agent QA:
+
+```bash
+conda activate treegrpo
+RUN_ID=qwen25-15b_webagent_run1 bash train_webagent_umcts.sh
 ```
 
 Use a new `RUN_ID` for each run. Existing result directories are not overwritten.
@@ -134,7 +155,7 @@ Training outputs are saved under:
 results/<dataset>/<model>/<run_name>/
 ```
 
-## 8. Useful Commands
+## 9. Useful Commands
 
 Check jobs:
 

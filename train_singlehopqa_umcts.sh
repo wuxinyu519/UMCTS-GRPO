@@ -92,14 +92,10 @@ echo "Result dir: $RESULT_DIR"
 
 ulimit -n 65535
 
-if [[ -n "${RAY_ADDRESS:-}" ]]; then
-    echo "Running training directly with RAY_ADDRESS=$RAY_ADDRESS"
-    CMD_PREFIX=("${PYTHON_BIN:-python3}" -m verl.trainer.main_ppo_format_ts)
-else
-    CMD_PREFIX=(ray job submit --address="$RAY_DASHBOARD_ADDRESS" --runtime-env=verl/trainer/runtime_env.yaml -- python3 -m verl.trainer.main_ppo_format_ts)
-fi
-
-"${CMD_PREFIX[@]}" \
+ray job submit --address=$RAY_DASHBOARD_ADDRESS \
+    --runtime-env=verl/trainer/runtime_env.yaml \
+    -- \
+    python3 -m verl.trainer.main_ppo_format_ts \
     data.train_files=$DATA_DIR/train.parquet \
     data.val_files=$DATA_DIR/test.parquet \
     data.train_data_num=null \
