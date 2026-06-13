@@ -41,10 +41,11 @@ cat run_info/retriever_url.txt
 Then submit one or more single-hop training jobs:
 
 ```bash
-sbatch submit_train_param1.sbatch  # baseline: l=1, c_u=1.0
-sbatch submit_train_param2.sbatch  # more search: l=2, c_u=1.0
-sbatch submit_train_param3.sbatch  # conservative uncertainty: l=1, c_u=0.5
-sbatch submit_train_param4.sbatch  # aggressive uncertainty: l=1, c_u=2.0
+sbatch submit_train_8gpu.sbatch    # default baseline: l=1, c_u=1.0, lambda_l=1.0
+sbatch submit_train_param1.sbatch  # more search: l=2, c_u=1.0, lambda_l=1.0
+sbatch submit_train_param2.sbatch  # conservative uncertainty: l=1, c_u=0.5
+sbatch submit_train_param3.sbatch  # aggressive uncertainty: l=1, c_u=2.0
+sbatch submit_train_param4.sbatch  # stronger local advantage: l=1, c_u=1.0, lambda_l=2.0
 ```
 
 Each `submit_train_param*.sbatch` job requests one `gpuA100x8` node by default
@@ -211,10 +212,11 @@ sbatch submit_train_8gpu.sbatch
 For the current parameter sweep, submit any of these independent single-hop jobs:
 
 ```bash
-sbatch submit_train_param1.sbatch  # baseline: l=1, c_u=1.0, lambda_l=1.0
-sbatch submit_train_param2.sbatch  # more search: l=2, c_u=1.0, lambda_l=1.0
-sbatch submit_train_param3.sbatch  # conservative uncertainty: l=1, c_u=0.5
-sbatch submit_train_param4.sbatch  # aggressive uncertainty: l=1, c_u=2.0
+sbatch submit_train_8gpu.sbatch    # default baseline: l=1, c_u=1.0, lambda_l=1.0
+sbatch submit_train_param1.sbatch  # more search: l=2, c_u=1.0, lambda_l=1.0
+sbatch submit_train_param2.sbatch  # conservative uncertainty: l=1, c_u=0.5
+sbatch submit_train_param3.sbatch  # aggressive uncertainty: l=1, c_u=2.0
+sbatch submit_train_param4.sbatch  # stronger local advantage: l=1, c_u=1.0, lambda_l=2.0
 ```
 
 Each preset requests one `gpuA100x8` node by default. Existing result
@@ -250,11 +252,11 @@ checkpoints/
 | Script | What it runs | Default resources | Output location |
 |---|---|---|---|
 | `submit_retriever_2gpu.sbatch` | Starts the retrieval server and writes `run_info/retriever_url.txt` | 1 `gpuA100x4` node, 2 GPUs | Slurm logs in `logs/umcts_retriever_<JOBID>.out/.err` |
-| `submit_train_8gpu.sbatch` | Starts Ray in the Slurm allocation and runs `TRAIN_SCRIPT`; defaults to `train_singlehopqa_umcts.sh` | 1 `gpuA100x8` node, 8 GPUs | Results under `results/singlehopqa/<model>/<run_name>/`; Slurm logs in `logs/umcts_train_<JOBID>.out/.err` |
-| `submit_train_param1.sbatch` | Single-hop UMCTS baseline: `l=1`, `c_u=1.0`, `lambda_l=1.0` | 1 `gpuA100x8` node, 8 GPUs | `results/singlehopqa/Qwen2.5-1.5B-Instruct/..._singlehop_1/` |
-| `submit_train_param2.sbatch` | Single-hop UMCTS with more search: `l=2`, `c_u=1.0`, `lambda_l=1.0` | 1 `gpuA100x8` node, 8 GPUs | `results/singlehopqa/Qwen2.5-1.5B-Instruct/..._singlehop_2/` |
-| `submit_train_param3.sbatch` | Single-hop UMCTS with conservative uncertainty: `l=1`, `c_u=0.5`, `lambda_l=1.0` | 1 `gpuA100x8` node, 8 GPUs | `results/singlehopqa/Qwen2.5-1.5B-Instruct/..._singlehop_3/` |
-| `submit_train_param4.sbatch` | Single-hop UMCTS with aggressive uncertainty: `l=1`, `c_u=2.0`, `lambda_l=1.0` | 1 `gpuA100x8` node, 8 GPUs | `results/singlehopqa/Qwen2.5-1.5B-Instruct/..._singlehop_4/` |
+| `submit_train_8gpu.sbatch` | Default single-hop baseline: `l=1`, `c_u=1.0`, `lambda_l=1.0` | 1 `gpuA100x8` node, 8 GPUs | Results under `results/singlehopqa/<model>/<run_name>/`; Slurm logs in `logs/umcts_train_<JOBID>.out/.err` |
+| `submit_train_param1.sbatch` | Single-hop UMCTS with more search: `l=2`, `c_u=1.0`, `lambda_l=1.0` | 1 `gpuA100x8` node, 8 GPUs | `results/singlehopqa/Qwen2.5-1.5B-Instruct/..._singlehop_1/` |
+| `submit_train_param2.sbatch` | Single-hop UMCTS with conservative uncertainty: `l=1`, `c_u=0.5`, `lambda_l=1.0` | 1 `gpuA100x8` node, 8 GPUs | `results/singlehopqa/Qwen2.5-1.5B-Instruct/..._singlehop_2/` |
+| `submit_train_param3.sbatch` | Single-hop UMCTS with aggressive uncertainty: `l=1`, `c_u=2.0`, `lambda_l=1.0` | 1 `gpuA100x8` node, 8 GPUs | `results/singlehopqa/Qwen2.5-1.5B-Instruct/..._singlehop_3/` |
+| `submit_train_param4.sbatch` | Single-hop UMCTS with stronger local advantage: `l=1`, `c_u=1.0`, `lambda_l=2.0` | 1 `gpuA100x8` node, 8 GPUs | `results/singlehopqa/Qwen2.5-1.5B-Instruct/..._singlehop_4/` |
 | `train_singlehopqa_umcts.sh` | The actual single-hop UMCTS training command and hyperparameter overrides | Uses the Ray cluster started by the submit script | Writes `logs/verl.log`, config snapshots, and checkpoints under the result directory |
 
 Every training result directory contains:
