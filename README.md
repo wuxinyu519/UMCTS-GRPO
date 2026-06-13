@@ -149,73 +149,43 @@ data/models/e5-base-v2
 
 `Qwen2.5-1.5B-Instruct` is used as the policy model. `e5-base-v2` is used by the retriever and by UMCTS semantic clustering when `UMCTS_CLUSTER_MODE=embedding`.
 
-## 6. Start Retriever
+## 6. Start Retriever On The Cluster
 
-Edit `local_retrieval_launch.sh` so the paths point to your local index,
-corpus, and E5 model:
-
-```bash
-index_file=data/wiki18/e5_Flat.index
-corpus_file=data/wiki18/wiki-18.jsonl
-retriever_path=data/models/e5-base-v2
-```
-
-Then start the retriever in the `retriever` environment:
-
-```bash
-conda activate retriever
-bash local_retrieval_launch.sh
-```
-
-By default, the training scripts expect:
-
-```text
-http://127.0.0.1:8000/retrieve
-```
-
-On Delta, the Slurm retriever helper starts the server and writes the URL to
-`run_info/retriever_url.txt`:
+Start the retriever as a Slurm job from the repository root:
 
 ```bash
 sbatch submit_retriever_2gpu.sbatch
 ```
 
-## 7. Start Ray For Training
+The retriever job uses the local files below by default:
 
-UMCTS training follows the Tree-GRPO default launch style: start a Ray head with dashboard/job server, then run the training script. The retriever uses separate GPUs and is not included in the training GPU count.
-
-For an 8-GPU training node:
-
-```bash
-conda activate treegrpo
-ray stop --force
-ray start --head --node-ip-address=127.0.0.1 --dashboard-host=127.0.0.1 --dashboard-port=8265 --num-gpus=8
+```text
+data/wiki18/e5_Flat.index
+data/wiki18/wiki-18.jsonl
+data/models/e5-base-v2/
 ```
 
-The UMCTS scripts submit work through Ray's default job server:
+It writes the retriever endpoint here:
 
 ```bash
-ray job submit --address=http://127.0.0.1:8265 -- python3 -m verl.trainer.main_ppo_format_ts ...
+cat run_info/retriever_url.txt
 ```
 
-## 8. Run UMCTS Training
+The training jobs read this file automatically and wait for it if the retriever
+has not finished starting.
 
-Single-hop QA:
+## 7. Run Single-Hop UMCTS Training On The Cluster
 
-```bash
-conda activate treegrpo
-RUN_ID=qwen25-15b_singlehop_run1 bash train_singlehopqa_umcts.sh
-```
+Do not start Ray manually. The Slurm training scripts start Ray inside the
+allocated job and then run `train_singlehopqa_umcts.sh`.
 
-On Delta, `submit_train_8gpu.sbatch` starts Ray inside the Slurm allocation and
-runs single-hop QA. By default it requests one full A100 8-GPU node:
+Submit the default single-hop training job:
 
 ```bash
 sbatch submit_train_8gpu.sbatch
 ```
 
-Preset submit scripts are provided for common parameter sweeps. Each preset is
-an independent single-hop QA Slurm job:
+For the current parameter sweep, submit any of these independent single-hop jobs:
 
 ```bash
 sbatch submit_train_param1.sbatch  # baseline: l=1, c_u=1.0, lambda_l=1.0
