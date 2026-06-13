@@ -4,6 +4,16 @@ This repository contains the UMCTS-GRPO code forked from Tree-GRPO. Large runtim
 
 ## 1. Create Environments
 
+The current working environments are exported under `envs/`. To reproduce the
+same package set, create both environments from these YAML files:
+
+```bash
+conda env create -f envs/treegrpo-full.yml
+conda env create -f envs/retriever-full.yml
+```
+
+The manual installation commands below are kept as a fallback.
+
 Training environment:
 
 ```bash
