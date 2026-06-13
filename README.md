@@ -156,6 +156,10 @@ sbatch submit_train_param1.sbatch  # more search: l=2, c_u=1.0, lambda_l=1.0
 sbatch submit_train_param2.sbatch  # conservative uncertainty: l=1, c_u=0.5
 sbatch submit_train_param3.sbatch  # aggressive uncertainty: l=1, c_u=2.0
 sbatch submit_train_param4.sbatch  # stronger local advantage: l=1, c_u=1.0, lambda_l=2.0
+sbatch submit_train_param5.sbatch  # no local advantage: l=1, c_u=1.0, lambda_l=0
+sbatch submit_train_param6.sbatch  # strong confidence gate: l=1, c_u=1.0, tau=5.0
+sbatch submit_train_param7.sbatch  # weak confidence gate: l=1, c_u=1.0, tau=0.1
+sbatch submit_train_param8.sbatch  # combined search/exploration: l=2, c_u=2.0, lambda_l=1.0
 ```
 
 Each preset requests one `gpuA100x8` node by default. Existing result
@@ -196,6 +200,10 @@ checkpoints/
 | `submit_train_param2.sbatch` | Single-hop UMCTS with conservative uncertainty: `l=1`, `c_u=0.5`, `lambda_l=1.0` | 1 `gpuA100x8` node, 8 GPUs | `results/singlehopqa/Qwen2.5-1.5B-Instruct/..._singlehop_2/` |
 | `submit_train_param3.sbatch` | Single-hop UMCTS with aggressive uncertainty: `l=1`, `c_u=2.0`, `lambda_l=1.0` | 1 `gpuA100x8` node, 8 GPUs | `results/singlehopqa/Qwen2.5-1.5B-Instruct/..._singlehop_3/` |
 | `submit_train_param4.sbatch` | Single-hop UMCTS with stronger local advantage: `l=1`, `c_u=1.0`, `lambda_l=2.0` | 1 `gpuA100x8` node, 8 GPUs | `results/singlehopqa/Qwen2.5-1.5B-Instruct/..._singlehop_4/` |
+| `submit_train_param5.sbatch` | Single-hop UMCTS without local step advantage: `l=1`, `c_u=1.0`, `lambda_l=0` | 1 `gpuA100x8` node, 8 GPUs | `results/singlehopqa/Qwen2.5-1.5B-Instruct/..._singlehop_5/` |
+| `submit_train_param6.sbatch` | Single-hop UMCTS with stronger confidence gate: `l=1`, `c_u=1.0`, `tau=5.0` | 1 `gpuA100x8` node, 8 GPUs | `results/singlehopqa/Qwen2.5-1.5B-Instruct/..._singlehop_6/` |
+| `submit_train_param7.sbatch` | Single-hop UMCTS with weaker confidence gate: `l=1`, `c_u=1.0`, `tau=0.1` | 1 `gpuA100x8` node, 8 GPUs | `results/singlehopqa/Qwen2.5-1.5B-Instruct/..._singlehop_7/` |
+| `submit_train_param8.sbatch` | Single-hop UMCTS with combined search and exploration: `l=2`, `c_u=2.0`, `lambda_l=1.0` | 1 `gpuA100x8` node, 8 GPUs | `results/singlehopqa/Qwen2.5-1.5B-Instruct/..._singlehop_8/` |
 | `train_singlehopqa_umcts.sh` | The actual single-hop UMCTS training command and hyperparameter overrides | Uses the Ray cluster started by the submit script | Writes `logs/verl.log`, config snapshots, and checkpoints under the result directory |
 
 Every training result directory contains:
