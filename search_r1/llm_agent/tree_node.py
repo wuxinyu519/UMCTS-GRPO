@@ -75,7 +75,7 @@ class TreeNode:
         self.q_count = 0
         self.q_mean = 0.0
         self.q_m2 = 0.0
-        self.q_std = 0.0
+        self.q_variance_mean = 0.0
         self.immediate_reward = 0.0
         # Var(r_hat): local action uncertainty from sampled-token surprisal and
         # semantic dispersion. The cluster prior term is zero when all sampled
@@ -178,7 +178,7 @@ class TreeNode:
         # Eq. (10) stores the empirical mean q_hat. Following Sec. 3.3,
         # Var(q_hat) combines propagated Bellman uncertainty with empirical
         # disagreement among sampled continuations for this edge.
-        return max(self.q_std ** 2 + self.empirical_q_variance, 0.0)
+        return max(self.q_variance_mean + self.empirical_q_variance, 0.0)
 
     @property
     def mean_uncertainty(self) -> float:
@@ -226,8 +226,8 @@ class TreeNode:
         self.q_mean += delta / self.q_count
         delta2 = target - self.q_mean
         self.q_m2 += delta * delta2
-        target_std = math.sqrt(max(target_variance, 0.0))
-        self.q_std += (target_std - self.q_std) / self.q_count
+        target_variance = max(target_variance, 0.0)
+        self.q_variance_mean += (target_variance - self.q_variance_mean) / self.q_count
 
         # Keep legacy counters populated for existing diagnostics/config dumps.
         self.value_count = self.q_count
