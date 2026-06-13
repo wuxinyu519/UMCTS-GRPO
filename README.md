@@ -2,6 +2,76 @@
 
 This repository contains the UMCTS-GRPO code forked from Tree-GRPO. Large runtime files are not tracked by git. Put datasets, indexes, models, logs, and training outputs under local directories such as `data/`, `logs/`, and `results/`.
 
+## Quick Run On Delta
+
+Run all commands from the repository root. The Slurm scripts assume the current
+working directory is the cloned repo. This quick path assumes the `treegrpo`
+and `retriever` conda environments have already been created; if not, follow
+[Create Environments](#1-create-environments) first.
+
+```bash
+git clone https://github.com/wuxinyu519/UMCTS-GRPO.git
+cd UMCTS-GRPO
+mkdir -p data/wiki18 data/models logs results run_info
+```
+
+Prepare these files before submitting jobs:
+
+```text
+data/wiki18/e5_Flat.index
+data/wiki18/wiki-18.jsonl
+data/singlehopqa/train.parquet
+data/singlehopqa/test.parquet
+data/models/Qwen2.5-1.5B-Instruct/
+data/models/e5-base-v2/
+```
+
+Start the retriever first:
+
+```bash
+sbatch submit_retriever_2gpu.sbatch
+```
+
+The retriever job writes the URL here:
+
+```bash
+cat run_info/retriever_url.txt
+```
+
+Then submit one or more single-hop training jobs:
+
+```bash
+sbatch submit_train_param1.sbatch  # baseline: l=1, c_u=1.0
+sbatch submit_train_param2.sbatch  # more search: l=2, c_u=1.0
+sbatch submit_train_param3.sbatch  # conservative uncertainty: l=1, c_u=0.5
+sbatch submit_train_param4.sbatch  # aggressive uncertainty: l=1, c_u=2.0
+```
+
+Each `submit_train_param*.sbatch` job requests one `gpuA100x8` node by default
+and runs single-hop QA only. Training jobs wait for `run_info/retriever_url.txt`
+if the retriever has not finished starting.
+
+Results are saved under:
+
+```text
+results/singlehopqa/Qwen2.5-1.5B-Instruct/<run_name>/
+```
+
+Slurm logs are saved under:
+
+```text
+logs/umcts_retriever_<JOBID>.out
+logs/umcts_retriever_<JOBID>.err
+logs/umcts_train_p<1-4>_<JOBID>.out
+logs/umcts_train_p<1-4>_<JOBID>.err
+```
+
+The main result log for each run is:
+
+```text
+results/singlehopqa/Qwen2.5-1.5B-Instruct/<run_name>/logs/verl.log
+```
+
 ## 1. Create Environments
 
 Training environment:
