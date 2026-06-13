@@ -222,34 +222,7 @@ config/git_diff.patch
 checkpoints/
 ```
 
-## 9. Useful Commands
-
-Check jobs:
-
-```bash
-squeue -u $USER
-```
-
-Cancel a job:
-
-```bash
-scancel <JOBID>
-```
-
-Watch logs:
-
-```bash
-tail -f logs/umcts_train_<JOBID>.out
-tail -f logs/umcts_train_<JOBID>.err
-```
-
-Check retriever URL:
-
-```bash
-cat run_info/retriever_url.txt
-```
-
-## 10. Script Summary
+## 9. Script Summary
 
 | Script | What it runs | Default resources | Output location |
 |---|---|---|---|
