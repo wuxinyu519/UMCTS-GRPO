@@ -140,7 +140,30 @@ data/singlehopqa/test.parquet
 
 ## 5. Prepare Models
 
-Place local Hugging Face model directories under `data/models/`, for example:
+Download the policy model and embedding model under `data/models/`.
+
+If the cluster can access Hugging Face directly:
+
+```bash
+conda activate treegrpo
+pip install -U huggingface_hub
+
+huggingface-cli download Qwen/Qwen2.5-1.5B-Instruct \
+  --local-dir data/models/Qwen2.5-1.5B-Instruct \
+  --local-dir-use-symlinks False
+
+huggingface-cli download intfloat/e5-base-v2 \
+  --local-dir data/models/e5-base-v2 \
+  --local-dir-use-symlinks False
+```
+
+If Hugging Face requires authentication on your cluster, run this first:
+
+```bash
+huggingface-cli login
+```
+
+Expected model directories:
 
 ```text
 data/models/Qwen2.5-1.5B-Instruct
