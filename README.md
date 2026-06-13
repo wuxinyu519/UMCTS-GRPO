@@ -112,56 +112,77 @@ data/models/e5-base-v2
 
 `Qwen2.5-1.5B-Instruct` is used as the policy model. `e5-base-v2` is used by the retriever and by UMCTS semantic clustering when `UMCTS_CLUSTER_MODE=embedding`.
 
-## 6. Start Retriever On The Cluster
+## 6. Run Experiments
 
-Start the retriever as a Slurm job from the repository root:
+The repository exposes three top-level bash entry points. By default they run on
+one local 8-GPU node, start a local retriever, start Ray with the dashboard
+enabled, and submit training through Ray Jobs at `http://127.0.0.1:8265`.
+
+Run from the repository root:
 
 ```bash
-sbatch submit_retriever_2gpu.sbatch
+cd UMCTS-GRPO
+conda activate treegrpo
 ```
 
-The retriever job uses the local files below by default:
+Single-hop, all configured models, default UMCTS parameters:
+
+```bash
+bash submit_sweep_singlehop_all_models.sh
+```
+
+Multi-hop, all configured models, default UMCTS parameters:
+
+```bash
+bash submit_sweep_multihop_all_models.sh
+```
+
+Single-hop and multi-hop, all configured models, all six parameter settings:
+
+```bash
+bash submit_sweep_all_models_all_params.sh
+```
+
+The all-parameter sweep submits/runs:
 
 ```text
-data/wiki18/e5_Flat.index
-data/wiki18/wiki-18.jsonl
-data/models/e5-base-v2/
+5 models x 2 datasets x 6 parameter settings = 60 runs
 ```
 
-It writes the retriever endpoint here:
+The scripts expect these model directories:
+
+```text
+data/models/Qwen2.5-1.5B-Instruct
+data/models/Qwen2.5-3B
+data/models/Llama-3.2-3B
+data/models/Qwen2.5-7B
+data/models/Qwen2.5-14B
+data/models/e5-base-v2
+```
+
+Missing model directories are skipped by default. To fail immediately when a
+model or dataset is missing:
 
 ```bash
-cat run_info/retriever_url.txt
+STRICT_MODE=1 bash submit_sweep_singlehop_all_models.sh
 ```
 
-The training jobs read this file automatically and wait for it if the retriever
-has not finished starting.
+## 7. Optional Slurm Backend
 
-## 7. Run Single-Hop UMCTS Training On The Cluster
-
-Do not start Ray manually. The Slurm training scripts start Ray inside the
-allocated job and then run `train_singlehopqa_umcts.sh`.
-
-Submit the default single-hop training job:
+For Slurm clusters, use the same three bash scripts with `BACKEND=slurm`. Each
+training run requests one `gpuA100x8` node by default, and the retriever helper
+requests one `gpuA100x4` node with two GPUs.
 
 ```bash
-sbatch submit_train_8gpu.sbatch
+BACKEND=slurm bash submit_sweep_singlehop_all_models.sh
+BACKEND=slurm bash submit_sweep_multihop_all_models.sh
+BACKEND=slurm bash submit_sweep_all_models_all_params.sh
 ```
 
-For the current parameter sweep, submit any of these independent single-hop jobs:
+Internal Slurm helper scripts live under `scripts/slurm/`. They are not the
+main user entry points.
 
-```bash
-sbatch submit_train_8gpu.sbatch    # default baseline: l=1, c_u=1.0, lambda_l=1.0
-sbatch submit_train_param1.sbatch  # conservative uncertainty: l=1, c_u=0.5
-sbatch submit_train_param2.sbatch  # aggressive uncertainty: l=1, c_u=2.0
-sbatch submit_train_param3.sbatch  # stronger local advantage: l=1, c_u=1.0, lambda_l=2.0
-sbatch submit_train_param4.sbatch  # strong confidence gate: l=1, c_u=1.0, tau=5.0
-sbatch submit_train_param5.sbatch  # weak confidence gate: l=1, c_u=1.0, tau=0.1
-```
-
-Each preset requests one `gpuA100x8` node by default. Existing result
-directories are not overwritten. If a result directory already exists, the run
-exits instead of replacing it.
+## 8. Results
 
 Training outputs are saved under:
 
@@ -169,36 +190,12 @@ Training outputs are saved under:
 results/<dataset>/<model>/<run_name>/
 ```
 
-For example, the preset scripts save to directories like:
+Examples:
 
 ```text
-results/singlehopqa/Qwen2.5-1.5B-Instruct/singlehopqa-umcts-qwen2.5-3b-qwen25-15b_singlehop_1/
-results/singlehopqa/Qwen2.5-1.5B-Instruct/singlehopqa-umcts-qwen2.5-3b-qwen25-15b_singlehop_2/
+results/singlehopqa/Qwen2.5-1.5B-Instruct/<run_name>/
+results/multihopqa/Qwen2.5-7B/<run_name>/
 ```
-
-Each result directory contains:
-
-```text
-logs/verl.log
-config/run.env
-config/train_script.sh
-config/git_commit.txt
-config/git_diff.patch
-checkpoints/
-```
-
-## 8. Script Summary
-
-| Script | What it runs | Default resources | Output location |
-|---|---|---|---|
-| `submit_retriever_2gpu.sbatch` | Starts the retrieval server and writes `run_info/retriever_url.txt` | 1 `gpuA100x4` node, 2 GPUs | Slurm logs in `logs/umcts_retriever_<JOBID>.out/.err` |
-| `submit_train_8gpu.sbatch` | Default single-hop baseline: `l=1`, `c_u=1.0`, `lambda_l=1.0` | 1 `gpuA100x8` node, 8 GPUs | Results under `results/singlehopqa/<model>/<run_name>/`; Slurm logs in `logs/umcts_train_<JOBID>.out/.err` |
-| `submit_train_param1.sbatch` | Single-hop UMCTS with conservative uncertainty: `l=1`, `c_u=0.5`, `lambda_l=1.0`, `tau=1.0` | 1 `gpuA100x8` node, 8 GPUs | `results/singlehopqa/Qwen2.5-1.5B-Instruct/..._singlehop_1/` |
-| `submit_train_param2.sbatch` | Single-hop UMCTS with aggressive uncertainty: `l=1`, `c_u=2.0`, `lambda_l=1.0`, `tau=1.0` | 1 `gpuA100x8` node, 8 GPUs | `results/singlehopqa/Qwen2.5-1.5B-Instruct/..._singlehop_2/` |
-| `submit_train_param3.sbatch` | Single-hop UMCTS with stronger local advantage: `l=1`, `c_u=1.0`, `lambda_l=2.0`, `tau=1.0` | 1 `gpuA100x8` node, 8 GPUs | `results/singlehopqa/Qwen2.5-1.5B-Instruct/..._singlehop_3/` |
-| `submit_train_param4.sbatch` | Single-hop UMCTS with stronger confidence gate: `l=1`, `c_u=1.0`, `lambda_l=1.0`, `tau=5.0` | 1 `gpuA100x8` node, 8 GPUs | `results/singlehopqa/Qwen2.5-1.5B-Instruct/..._singlehop_4/` |
-| `submit_train_param5.sbatch` | Single-hop UMCTS with weaker confidence gate: `l=1`, `c_u=1.0`, `lambda_l=1.0`, `tau=0.1` | 1 `gpuA100x8` node, 8 GPUs | `results/singlehopqa/Qwen2.5-1.5B-Instruct/..._singlehop_5/` |
-| `train_singlehopqa_umcts.sh` | The actual single-hop UMCTS training command and hyperparameter overrides | Uses the Ray cluster started by the submit script | Writes `logs/verl.log`, config snapshots, and checkpoints under the result directory |
 
 Every training result directory contains:
 

@@ -14,7 +14,7 @@
 
 set -euo pipefail
 
-REPO_DIR=${REPO_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}
+REPO_DIR=${REPO_DIR:-${SLURM_SUBMIT_DIR:-$(pwd)}}
 INDEX_FILE=${INDEX_FILE:-${REPO_DIR}/data/wiki18/e5_Flat.index}
 CORPUS_FILE=${CORPUS_FILE:-${REPO_DIR}/data/wiki18/wiki-18.jsonl}
 RETRIEVER_MODEL=${RETRIEVER_MODEL:-${REPO_DIR}/data/models/e5-base-v2}
