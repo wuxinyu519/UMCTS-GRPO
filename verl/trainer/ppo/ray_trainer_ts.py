@@ -852,6 +852,7 @@ class RayPPOTrainer(object):
             umcts_confidence_tau = self.config.actor_rollout_ref.rollout.get('umcts_confidence_tau', 1.0),
             umcts_inter_advantage_weight = self.config.actor_rollout_ref.rollout.get('umcts_inter_advantage_weight', 1.0),
             umcts_local_advantage_weight = self.config.actor_rollout_ref.rollout.get('umcts_local_advantage_weight', 1.0),
+            umcts_gamma = self.config.actor_rollout_ref.rollout.get('umcts_gamma', 1.0),
         )
 
         generation_manager = LLMGenerationTreeSearchManager(

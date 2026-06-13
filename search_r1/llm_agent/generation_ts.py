@@ -45,6 +45,7 @@ class GenerationTreeSearchConfig:
     umcts_confidence_tau: float = 1.0
     umcts_inter_advantage_weight: float = 1.0
     umcts_local_advantage_weight: float = 1.0
+    umcts_gamma: float = 1.0
 
 class LLMGenerationTreeSearchManager:
     def __init__(
@@ -337,7 +338,10 @@ class LLMGenerationTreeSearchManager:
             score_value = float(score.detach().cpu().item()) if torch.is_tensor(score) else float(score)
             dprint(f'node:{node.node_uid}, original_score={score_value}')
             node.set_leaf_original_score(score_value)
-            node.backpropagate_value(score_value)
+            node.backpropagate_uncertainty_bellman(
+                value=score_value,
+                gamma=self.config.umcts_gamma,
+            )
             node.value_backed_up = True
 
     def _evaluate_current_leaf_values(self, gen_batch: DataProto):

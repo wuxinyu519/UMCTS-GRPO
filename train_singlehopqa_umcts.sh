@@ -37,6 +37,7 @@ UMCTS_CANDIDATE_K=${UMCTS_CANDIDATE_K:-4}
 UMCTS_CONFIDENCE_TAU=${UMCTS_CONFIDENCE_TAU:-1.0}
 UMCTS_INTER_ADVANTAGE_WEIGHT=${UMCTS_INTER_ADVANTAGE_WEIGHT:-1.0}
 UMCTS_LOCAL_ADVANTAGE_WEIGHT=${UMCTS_LOCAL_ADVANTAGE_WEIGHT:-1.0}
+UMCTS_GAMMA=${UMCTS_GAMMA:-1.0}
 UMCTS_EMBEDDING_MODEL=${UMCTS_EMBEDDING_MODEL:-}
 if [[ "$UMCTS_CLUSTER_MODE" == "embedding" && -z "$UMCTS_EMBEDDING_MODEL" ]]; then
     echo "ERROR: UMCTS_CLUSTER_MODE=embedding requires UMCTS_EMBEDDING_MODEL=/path/to/local/embedding-model"
@@ -83,6 +84,7 @@ mkdir -p "$RESULT_DIR/logs" "$RESULT_DIR/config" "$RESULT_DIR/checkpoints" verl_
     echo "umcts_confidence_tau=$UMCTS_CONFIDENCE_TAU"
     echo "umcts_inter_advantage_weight=$UMCTS_INTER_ADVANTAGE_WEIGHT"
     echo "umcts_local_advantage_weight=$UMCTS_LOCAL_ADVANTAGE_WEIGHT"
+    echo "umcts_gamma=$UMCTS_GAMMA"
     echo "result_dir=$RESULT_DIR"
 } > "$RESULT_DIR/config/run.env"
 cp "$0" "$RESULT_DIR/config/train_script.sh"
@@ -147,6 +149,7 @@ fi
     actor_rollout_ref.rollout.umcts_confidence_tau=$UMCTS_CONFIDENCE_TAU \
     actor_rollout_ref.rollout.umcts_inter_advantage_weight=$UMCTS_INTER_ADVANTAGE_WEIGHT \
     actor_rollout_ref.rollout.umcts_local_advantage_weight=$UMCTS_LOCAL_ADVANTAGE_WEIGHT \
+    actor_rollout_ref.rollout.umcts_gamma=$UMCTS_GAMMA \
     actor_rollout_ref.rollout.gpu_memory_utilization=0.6 \
     +actor_rollout_ref.rollout.disable_log_stats=true \
     +actor_rollout_ref.rollout.enable_chunked_prefill=true \
