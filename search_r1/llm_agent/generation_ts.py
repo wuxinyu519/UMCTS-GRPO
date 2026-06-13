@@ -356,11 +356,12 @@ class LLMGenerationTreeSearchManager:
         return torch.mean(log_probs, dim=1)
 
     def _log_prob_to_uncertainty(self, log_prob: torch.Tensor) -> float:
-        # vLLM returns log p(sampled token). Lower confidence means higher uncertainty.
+        # vLLM returns log p(sampled token), not the full vocabulary distribution.
+        # Use per-token mean surprisal, -E[log p_t], as a sampled approximation
+        # of token-level entropy.
         if not torch.isfinite(log_prob):
             return 1.0
-        confidence = torch.exp(log_prob.detach().float()).clamp(0.0, 1.0)
-        return float((1.0 - confidence).item())
+        return float((-log_prob.detach().float()).clamp(min=0.0, max=10.0).item())
 
     def _parse_action_for_clustering(self, prediction: str) -> Tuple[str, str, str]:
         actions, contents = self.postprocess_predictions([prediction])
