@@ -33,6 +33,18 @@ class GenerationTreeSearchConfig:
     k: int = 4 # number of final selected samples per tree
     reward_mode: str = 'tree_diff'
     expand_mode: str = 'random'
+    umcts_ucb_c: float = 1.0
+    umcts_uncertainty_coef: float = 1.0
+    umcts_value_coef: float = 1.0
+    umcts_prior_coef: float = 1.0
+    umcts_cost_coef: float = 0.0
+    umcts_candidate_k: int = 4
+    umcts_cluster_mode: str = 'embedding'
+    umcts_cluster_threshold: float = 0.85
+    umcts_embedding_model_path: str = ''
+    umcts_confidence_tau: float = 1.0
+    umcts_inter_advantage_weight: float = 1.0
+    umcts_local_advantage_weight: float = 1.0
 
 class LLMGenerationTreeSearchManager:
     def __init__(
@@ -57,6 +69,8 @@ class LLMGenerationTreeSearchManager:
         ))
 
         self.root_list = []
+        self._embedding_tokenizer = None
+        self._embedding_model = None
 
     def _batch_tokenize(self, responses: List[str]) -> torch.Tensor:
         """Tokenize a batch of responses."""
@@ -270,11 +284,213 @@ class LLMGenerationTreeSearchManager:
         padded_output.batch = trimmed_batch
         return padded_output
 
+    def _build_output_from_nodes(self, node_list: List[TreeNode], gen_batch: DataProto) -> DataProto:
+        prompts = torch.stack([node.prompts for node in node_list], dim=0)
+        responses = self.tensor_fn.pad_and_stack(
+            [node.responses for node in node_list],
+            pad_to_left=False,
+        ).long()
+        responses_with_info_mask = self.tensor_fn.pad_and_stack(
+            [node.responses_with_info_mask for node in node_list],
+            pad_to_left=False,
+        )
+        turns_mask = self.tensor_fn.pad_and_stack(
+            [node.turns_mask for node in node_list],
+            pad_to_left=False,
+        )
+
+        input_ids = torch.cat([prompts, responses], dim=1)
+        attention_mask = torch.cat([
+            self.tensor_fn.create_attention_mask(prompts),
+            self.tensor_fn.create_attention_mask(responses),
+        ], dim=1)
+        info_mask = torch.cat([
+            self.tensor_fn.create_attention_mask(prompts),
+            self.tensor_fn.create_attention_mask(responses_with_info_mask),
+        ], dim=1)
+        non_tensors = {
+            key: [value[node.source_index] for node in node_list]
+            for key, value in gen_batch.non_tensor_batch.items()
+        }
+
+        return DataProto.from_dict(
+            tensors={
+                'responses': responses.long(),
+                'prompts': prompts.long(),
+                'input_ids': input_ids.long(),
+                'attention_mask': attention_mask,
+                'info_mask': info_mask,
+                'position_ids': self.tensor_fn.create_position_ids(attention_mask),
+                'turns_mask': turns_mask,
+            },
+            non_tensors=non_tensors,
+            meta_info=gen_batch.meta_info,
+        )
+
+    def _evaluate_and_backup_nodes(self, node_list: List[TreeNode], gen_batch: DataProto):
+        unbacked_nodes = [node for node in node_list if not node.value_backed_up]
+        if not unbacked_nodes:
+            return
+        reward_output = self._build_output_from_nodes(unbacked_nodes, gen_batch)
+        original_scores, _ = self.reward_fn(reward_output)
+        for score, node in zip(original_scores, unbacked_nodes):
+            score_value = float(score.detach().cpu().item()) if torch.is_tensor(score) else float(score)
+            dprint(f'node:{node.node_uid}, original_score={score_value}')
+            node.set_leaf_original_score(score_value)
+            node.backpropagate_value(score_value)
+            node.value_backed_up = True
+
+    def _evaluate_current_leaf_values(self, gen_batch: DataProto):
+        leaf_nodes = []
+        for root in self.root_list:
+            leaf_nodes.extend(
+                node for node in root.get_subtree_nodes()
+                if node.is_leaf and not node.value_backed_up
+            )
+        self._evaluate_and_backup_nodes(leaf_nodes, gen_batch)
+
     def _get_action_log_probs(
             self,
             log_probs: torch.Tensor
         ):
         return torch.mean(log_probs, dim=1)
+
+    def _log_prob_to_uncertainty(self, log_prob: torch.Tensor) -> float:
+        # vLLM returns log p(sampled token). Lower confidence means higher uncertainty.
+        if not torch.isfinite(log_prob):
+            return 1.0
+        confidence = torch.exp(log_prob.detach().float()).clamp(0.0, 1.0)
+        return float((1.0 - confidence).item())
+
+    def _parse_action_for_clustering(self, prediction: str) -> Tuple[str, str, str]:
+        actions, contents = self.postprocess_predictions([prediction])
+        action, content = actions[0], contents[0]
+        if action is None:
+            return "invalid", "", "invalid:"
+        normalized = re.sub(r'\s+', ' ', content.strip().lower())
+        return action, normalized, f"{action}:{normalized}"
+
+    def _lexical_similarity(self, left: str, right: str) -> float:
+        left_set = set(re.findall(r'\w+', left.lower()))
+        right_set = set(re.findall(r'\w+', right.lower()))
+        if not left_set and not right_set:
+            return 1.0
+        if not left_set or not right_set:
+            return 0.0
+        return len(left_set & right_set) / len(left_set | right_set)
+
+    def _load_embedding_model(self):
+        if self._embedding_model is not None:
+            return
+        if not self.config.umcts_embedding_model_path:
+            raise ValueError(
+                "umcts_cluster_mode=embedding requires actor_rollout_ref.rollout.umcts_embedding_model_path"
+            )
+        from transformers import AutoModel, AutoTokenizer
+        self._embedding_tokenizer = AutoTokenizer.from_pretrained(
+            self.config.umcts_embedding_model_path,
+            trust_remote_code=True,
+        )
+        self._embedding_model = AutoModel.from_pretrained(
+            self.config.umcts_embedding_model_path,
+            trust_remote_code=True,
+        )
+        if torch.cuda.is_available():
+            self._embedding_model = self._embedding_model.to(torch.cuda.current_device())
+        self._embedding_model.eval()
+
+    def _embed_texts(self, texts: List[str]) -> torch.Tensor:
+        self._load_embedding_model()
+        encoded = self._embedding_tokenizer(
+            texts,
+            padding=True,
+            truncation=True,
+            max_length=256,
+            return_tensors='pt',
+        )
+        encoded = {key: value.to(self._embedding_model.device) for key, value in encoded.items()}
+        with torch.no_grad():
+            outputs = self._embedding_model(**encoded)
+            token_embeddings = outputs.last_hidden_state
+            mask = encoded['attention_mask'].unsqueeze(-1).to(token_embeddings.dtype)
+            pooled = (token_embeddings * mask).sum(dim=1) / mask.sum(dim=1).clamp_min(1.0)
+            pooled = torch.nn.functional.normalize(pooled, p=2, dim=1)
+        return pooled
+
+    def _cluster_candidate_indices(self, items: List[Tuple[int, str, str, str]]) -> List[List[int]]:
+        mode = self.config.umcts_cluster_mode
+        if mode == 'exact':
+            exact_clusters = defaultdict(list)
+            for local_idx, (_, _, _, key) in enumerate(items):
+                exact_clusters[key].append(local_idx)
+            return list(exact_clusters.values())
+
+        clusters = []
+        if mode == 'lexical':
+            for local_idx, (_, action, content, _) in enumerate(items):
+                assigned = False
+                for cluster in clusters:
+                    rep_idx = cluster[0]
+                    _, rep_action, rep_content, _ = items[rep_idx]
+                    if action == rep_action and self._lexical_similarity(content, rep_content) >= self.config.umcts_cluster_threshold:
+                        cluster.append(local_idx)
+                        assigned = True
+                        break
+                if not assigned:
+                    clusters.append([local_idx])
+            return clusters
+
+        if mode == 'embedding':
+            contents = [item[2] for item in items]
+            embeddings = self._embed_texts(contents)
+            for local_idx, (_, action, _, _) in enumerate(items):
+                assigned = False
+                for cluster in clusters:
+                    rep_idx = cluster[0]
+                    _, rep_action, _, _ = items[rep_idx]
+                    similarity = torch.dot(embeddings[local_idx], embeddings[rep_idx]).item()
+                    if action == rep_action and similarity >= self.config.umcts_cluster_threshold:
+                        cluster.append(local_idx)
+                        assigned = True
+                        break
+                if not assigned:
+                    clusters.append([local_idx])
+            return clusters
+
+        raise ValueError(f"Unsupported umcts_cluster_mode={mode}")
+
+    def _cluster_representatives(
+            self,
+            responses_str: List[str],
+            node_list: List[TreeNode],
+            active_mask: torch.Tensor,
+        ) -> Tuple[torch.Tensor, Dict[int, float]]:
+        """Keep one representative per semantic action cluster for repeated UMCTS candidates."""
+        representative_mask = torch.zeros_like(active_mask, dtype=torch.bool)
+        representative_prior = {}
+        parent_to_items = defaultdict(list)
+
+        for i, active in enumerate(active_mask):
+            if not bool(active):
+                continue
+            parent_uid = node_list[i].node_uid
+            action, content, key = self._parse_action_for_clustering(responses_str[i])
+            parent_to_items[parent_uid].append((i, action, content, key))
+
+        for _, items in parent_to_items.items():
+            clusters = self._cluster_candidate_indices(items)
+            parent_candidate_count = len(items)
+            for cluster in clusters:
+                representative_local_idx = random.choice(cluster)
+                representative_global_idx = items[representative_local_idx][0]
+                representative_mask[representative_global_idx] = True
+                representative_prior[representative_global_idx] = len(cluster) / max(parent_candidate_count, 1)
+
+        return representative_mask, representative_prior
+
+    def _estimate_interaction_cost(self, response_ids: torch.Tensor, is_search: int) -> float:
+        valid_tokens = self.tensor_fn.create_attention_mask(response_ids.unsqueeze(0)).sum().item()
+        return float(valid_tokens + is_search * self.config.topk)
 
     def gen_action_chain(
             self,
@@ -366,6 +582,14 @@ class LLMGenerationTreeSearchManager:
             # meta_info = gen_output.meta_info            
             responses_ids, responses_str = self._postprocess_responses(gen_output.batch['responses'])
             responses_ids, responses_str = self.tensor_fn._example_level_pad(responses_ids, responses_str, need_act_mask)
+            cluster_prior = {}
+            curr_action_mask = need_act_mask
+            if self.config.expand_mode == 'umcts':
+                curr_action_mask, cluster_prior = self._cluster_representatives(
+                    responses_str,
+                    tmp_node_list,
+                    need_act_mask,
+                )
 
             # for debug, stats response
             if DEBUG:
@@ -377,14 +601,14 @@ class LLMGenerationTreeSearchManager:
 
             # Execute in environment and process observations
             next_obs, dones, valid_action, is_search = self.execute_predictions(
-                responses_str, self.tokenizer.pad_token, need_act_mask
+                responses_str, self.tokenizer.pad_token, curr_action_mask
             )
             
             curr_active_mask = torch.tensor([not done for done in dones], dtype=torch.bool)
-            curr_action_mask = need_act_mask
+            curr_active_mask = curr_active_mask & curr_action_mask
             active_mask = active_mask * curr_active_mask
             active_num_list.append(active_mask.sum().item())
-            turns_stats[need_act_mask] += 1
+            turns_stats[curr_action_mask] += 1
             valid_action_stats += torch.tensor(valid_action, dtype=torch.int)
             valid_search_stats += torch.tensor(is_search, dtype=torch.int)
 
@@ -422,6 +646,10 @@ class LLMGenerationTreeSearchManager:
                 parent_node = tmp_node_list[i]
                 prompts = parent_node.prompts
                 tree_uid = parent_node.tree_uid
+                node_log_prob = float(log_probs_step[i].detach().float().item())
+                node_uncertainty = self._log_prob_to_uncertainty(log_probs_step[i])
+                node_prior = cluster_prior.get(i, 1.0)
+                node_cost = self._estimate_interaction_cost(responses_ids[i], is_search[i])
 
                 new_node = TreeNode(
                     tree_uid=tree_uid,
@@ -433,6 +661,11 @@ class LLMGenerationTreeSearchManager:
                     responses=responses,
                     responses_with_info_mask=responses_with_info_mask,
                     turns_mask=turns_mask,
+                    log_prob_node=node_log_prob,
+                    uncertainty=node_uncertainty,
+                    policy_prior=node_prior,
+                    interaction_cost=node_cost,
+                    source_index=parent_node.source_index,
                     parent_node=parent_node,
                     is_root=False,
                     is_active=bool(curr_active_mask[i].item()),
@@ -445,6 +678,7 @@ class LLMGenerationTreeSearchManager:
                 )
 
                 parent_node.add_child(new_node)
+                new_node.update_path_visit(node_uncertainty)
                 tmp_node_list[i] = new_node
             
                 
@@ -466,11 +700,20 @@ class LLMGenerationTreeSearchManager:
 
             ## choice 1: get vllm log_probs for tree search, log_probs is a 2d tensor
             log_probs = gen_output.batch['infer_log_probs']
+            log_probs = self.tensor_fn._example_level_pad_tensor(log_probs, active_mask)
             log_probs_step = self._get_action_log_probs(log_probs)
 
             meta_info = gen_output.meta_info            
             responses_ids, responses_str = self._postprocess_responses(gen_output.batch['responses'])
             responses_ids, responses_str = self.tensor_fn._example_level_pad(responses_ids, responses_str, active_mask)
+            cluster_prior = {}
+            curr_action_mask = active_mask.clone()
+            if self.config.expand_mode == 'umcts':
+                curr_action_mask, cluster_prior = self._cluster_representatives(
+                    responses_str,
+                    tmp_node_list,
+                    active_mask,
+                )
 
             # for debug, stats response
             if DEBUG:
@@ -478,12 +721,12 @@ class LLMGenerationTreeSearchManager:
 
             # # Execute in environment and process observations
             _, dones, valid_action, is_search = self.execute_predictions(
-                responses_str, self.tokenizer.pad_token, active_mask, do_search=False
+                responses_str, self.tokenizer.pad_token, curr_action_mask, do_search=False
             )
 
             curr_active_mask = torch.tensor([not done for done in dones], dtype=torch.bool)
-            curr_action_mask = active_mask.clone()
-            turns_stats[active_mask] += 1
+            curr_active_mask = curr_active_mask & curr_action_mask
+            turns_stats[curr_action_mask] += 1
             active_mask = active_mask * curr_active_mask
             active_num_list.append(active_mask.sum().item())
             valid_action_stats += torch.tensor(valid_action, dtype=torch.int)
@@ -519,6 +762,10 @@ class LLMGenerationTreeSearchManager:
                 parent_node = tmp_node_list[i]
                 prompts = parent_node.prompts
                 tree_uid = parent_node.tree_uid
+                node_log_prob = float(log_probs_step[i].detach().float().item())
+                node_uncertainty = self._log_prob_to_uncertainty(log_probs_step[i])
+                node_prior = cluster_prior.get(i, 1.0)
+                node_cost = self._estimate_interaction_cost(responses_ids[i], is_search[i])
 
                 new_node = TreeNode(
                     tree_uid=tree_uid,
@@ -530,6 +777,11 @@ class LLMGenerationTreeSearchManager:
                     responses=responses,
                     responses_with_info_mask=responses_with_info_mask,
                     turns_mask=turns_mask,
+                    log_prob_node=node_log_prob,
+                    uncertainty=node_uncertainty,
+                    policy_prior=node_prior,
+                    interaction_cost=node_cost,
+                    source_index=parent_node.source_index,
                     parent_node=parent_node,
                     is_root=False,
                     is_active=bool(curr_active_mask[i].item()),
@@ -544,6 +796,7 @@ class LLMGenerationTreeSearchManager:
                 dprint(f"Updated tmp_node_list[{i}] to new_node:", new_node.node_uid)
                 dprint(f"parent={parent_node.node_uid}, child={new_node.node_uid}, child is_leaf={True}")
                 parent_node.add_child(new_node)
+                new_node.update_path_visit(node_uncertainty)
 
         dprint(f"ROLLOUT_TOKEN_CNT={rollout_token_cnt}")
 
@@ -558,8 +811,10 @@ class LLMGenerationTreeSearchManager:
         ) -> Tuple[Dict, Dict]:
         """Run main LLM generation loop."""
 
-        expand_gen_batch = gen_batch.repeat(repeat_times=self.config.n, interleave=True)
-        final_output = gen_batch.repeat(repeat_times=self.config.k, interleave=True)
+        expansion_repeat = self.config.n
+        if self.config.expand_mode == 'umcts':
+            expansion_repeat *= self.config.umcts_candidate_k
+        expand_gen_batch = gen_batch.repeat(repeat_times=expansion_repeat, interleave=True)
         
         ## step 1. generate initial action chain (m,)
         turns_stats = torch.zeros(gen_batch.batch['input_ids'].shape[0], dtype=torch.int)
@@ -580,6 +835,7 @@ class LLMGenerationTreeSearchManager:
                 position_ids=position_ids,
                 attention_mask=attention_mask,
                 is_root=True,
+                source_index=i,
                 is_active=True,
                 valid_action_stats=0,
                 valid_search_stats=0,
@@ -590,6 +846,8 @@ class LLMGenerationTreeSearchManager:
             self.root_list.append(root_node)
         # Then, get m initial chains
         self.gen_action_chain(gen_batch, self.root_list.copy(), turns_stats)
+        if self.config.expand_mode == 'umcts':
+            self._evaluate_current_leaf_values(gen_batch)
 
         # step 2. Iteration to expand the trees
         for iteration in range(self.config.l):
@@ -597,7 +855,20 @@ class LLMGenerationTreeSearchManager:
 
             # get expansion for n nodes
             for root in self.root_list:
-                expansion_node_list_i = root.get_expand_node(self.config.n, mode=self.config.expand_mode)
+                expansion_node_list_i = root.get_expand_node(
+                    self.config.n,
+                    mode=self.config.expand_mode,
+                    ucb_c=self.config.umcts_ucb_c,
+                    uncertainty_coef=self.config.umcts_uncertainty_coef,
+                    value_coef=self.config.umcts_value_coef,
+                    prior_coef=self.config.umcts_prior_coef,
+                    cost_coef=self.config.umcts_cost_coef,
+                )
+                if self.config.expand_mode == 'umcts':
+                    repeated = []
+                    for node in expansion_node_list_i:
+                        repeated.extend([node] * self.config.umcts_candidate_k)
+                    expansion_node_list_i = repeated
                 expansion_node_list.extend(expansion_node_list_i)
                 expansion_node_uid_list = [node.node_uid for node in expansion_node_list_i]
                 dprint(f'==========get expansion for root={root.node_uid}, uid_list={expansion_node_uid_list}')
@@ -617,58 +888,46 @@ class LLMGenerationTreeSearchManager:
 
             # do the expansion
             self.gen_action_chain(expand_gen_batch, expansion_node_list, turns_stats)
+            if self.config.expand_mode == 'umcts':
+                self._evaluate_current_leaf_values(gen_batch)
         
         # step 3. Get final output 
         # The order is BS x M(trees) x K(samples per tree)
         # same as final_output
-        final_responses_list = []
-        final_responses_with_info_mask_list = []
-        final_turns_mask_list = []
         final_tree_uid_list = []
         final_node_list = []
         for root in self.root_list:
             root.check_all_nodes_child()
             # sample trajectory
-            final_node_list_tmp = root.sample_leaf(self.config.k)
+            final_node_list_tmp = root.sample_leaf(self.config.k, mode=self.config.expand_mode)
             final_node_list.extend(final_node_list_tmp)
 
         for node in final_node_list:
-            final_responses_list.append(node.responses)
-            final_responses_with_info_mask_list.append(node.responses_with_info_mask)
-            final_turns_mask_list.append(node.turns_mask)
             final_tree_uid_list.append(node.tree_uid)
 
-        final_responses = self.tensor_fn.pad_and_stack(final_responses_list, pad_to_left=False)
-        final_responses_with_info_mask = self.tensor_fn.pad_and_stack(final_responses_with_info_mask_list, pad_to_left=False)
-        final_turns_mask = self.tensor_fn.pad_and_stack(final_turns_mask_list, pad_to_left=False)
-
-        final_output.batch['responses'] = final_responses.long()
-        final_output.batch['prompts'] = final_output.batch['prompts'].long()
-        final_output.batch['input_ids'] = torch.cat([
-            final_output.batch['prompts'],
-            final_responses
-        ], dim=1)
-        final_output.batch['attention_mask'] = torch.cat([
-            self.tensor_fn.create_attention_mask(final_output.batch['prompts']),
-            self.tensor_fn.create_attention_mask(final_responses)
-        ], dim=1)
-        final_output.batch['info_mask'] = torch.cat([
-            self.tensor_fn.create_attention_mask(final_output.batch['prompts']),
-            self.tensor_fn.create_attention_mask(final_responses_with_info_mask)
-        ], dim=1)
-        final_output.batch['position_ids'] = self.tensor_fn.create_position_ids(
-            final_output.batch['attention_mask']
-        )
-        final_output.batch['turns_mask'] = final_turns_mask
+        final_output = self._build_output_from_nodes(final_node_list, gen_batch)
 
         # step 4. Compute scores and return outputs
         # get original score from reward_fn
         dprint('===========start calculate reward')
-        original_scores, _ = self.reward_fn(final_output)
-        for i, node in enumerate(final_node_list):
-            dprint(f'node:{node.node_uid}, original_score={original_scores[i]}')
-            node.set_leaf_original_score(original_scores[i])
-            # node.set_leaf_original_score(random.random())
+        self._evaluate_and_backup_nodes(final_node_list, gen_batch)
+
+        # Confidence-calibrated local process advantages from Eq. (13)-(15).
+        umcts_local_advantages_list = []
+        for node in final_node_list:
+            local_advantages = torch.zeros_like(node.responses, dtype=torch.float32)
+            for path_node in node.get_path_from_root():
+                step_advantage = path_node.get_precision_weighted_local_advantage(
+                    tau=self.config.umcts_confidence_tau,
+                )
+                local_advantages[node.turns_mask == path_node.depth] = step_advantage
+            umcts_local_advantages_list.append(local_advantages)
+        final_output.batch['umcts_local_advantages'] = self.tensor_fn.pad_and_stack(
+            umcts_local_advantages_list,
+            pad_to_left=False,
+            pad_value=0.0,
+        )
+
         # get final tree-based score for each tree
         for root in self.root_list:
             root.calculate_final_score_from_root()
@@ -695,6 +954,8 @@ class LLMGenerationTreeSearchManager:
         meta_info['active_mask'] = active_mask
         meta_info['valid_action_stats'] = valid_action_stats
         meta_info['valid_search_stats'] = valid_search_stats
+        meta_info['umcts_inter_advantage_weight'] = self.config.umcts_inter_advantage_weight
+        meta_info['umcts_local_advantage_weight'] = self.config.umcts_local_advantage_weight
 
         final_output.meta_info = meta_info
 
@@ -756,12 +1017,20 @@ class LLMGenerationTreeSearchManager:
         cur_actions, contents = self.postprocess_predictions(predictions)
         next_obs, dones, valid_action, is_search = [], [], [], []
         
-        search_queries = [content for action, content in zip(cur_actions, contents) if action == 'search']
+        search_queries = [
+            content
+            for action, content, active in zip(cur_actions, contents, active_mask)
+            if action == 'search' and active
+        ]
         if do_search:
             search_results = self.batch_search(search_queries)
-            assert len(search_results) == sum([1 for action in cur_actions if action == 'search'])
+            assert len(search_results) == sum(
+                1 for action, active in zip(cur_actions, active_mask) if action == 'search' and active
+            )
         else:
-            search_results = [''] * sum([1 for action in cur_actions if action == 'search'])
+            search_results = [''] * sum(
+                1 for action, active in zip(cur_actions, active_mask) if action == 'search' and active
+            )
 
         for i, (action, active) in enumerate(zip(cur_actions, active_mask)):
             

@@ -31,7 +31,11 @@ class TreeNode:
         responses_with_info_mask: Optional[torch.Tensor] = None, # responses_with_info_mask are the right_part output during rollout
         turns_mask: Optional[torch.Tensor] = None, # turn_mask are the right_part output during rollout
         log_prob_node: Optional[float] = 0.0,
-        log_prob_list: Optional[list[float]] = [],
+        log_prob_list: Optional[list[float]] = None,
+        uncertainty: float = 0.0,
+        policy_prior: float = 1.0,
+        interaction_cost: float = 0.0,
+        source_index: int = 0,
         parent_node: Optional['TreeNode'] = None,
         is_root: bool = False,
         is_active: bool = True,
@@ -57,7 +61,18 @@ class TreeNode:
         self.turns_mask: torch.Tensor = turns_mask
 
         self.log_prob_node: float = log_prob_node
-        self.log_prob_list: list[float] = log_prob_list
+        self.log_prob_list: list[float] = [] if log_prob_list is None else log_prob_list
+        self.uncertainty = uncertainty
+        self.policy_prior = policy_prior
+        self.interaction_cost = interaction_cost
+        self.source_index = source_index
+        self.visit_count = 0
+        self.value_count = 0
+        self.value_sum = 0.0
+        self.value_square_sum = 0.0
+        self.uncertainty_count = 0
+        self.uncertainty_sum = 0.0
+        self.value_backed_up = False
 
         self.parent_node = parent_node
         self._child_node = []
@@ -89,10 +104,10 @@ class TreeNode:
         Debug
         """
         print(f"!!! WARNING: Direct assignment to child_node on node {self.node_uid}. New list has {len(value)} children.")
-        
+
         import traceback
         traceback.print_stack()
-        
+
         # Check
         for child in value:
             if child is self:
@@ -129,7 +144,91 @@ class TreeNode:
             nodes_to_visit.extend(current_node.child_node)
         return num
 
-    def get_expand_node(self, n: int = 1, mode: str = 'random') -> List['TreeNode']:
+    @property
+    def mean_value(self) -> float:
+        return self.value_sum / max(self.value_count, 1)
+
+    @property
+    def value_variance(self) -> float:
+        if self.value_count <= 1:
+            return max(self.mean_uncertainty, self.uncertainty, 0.0)
+        mean_square = self.value_square_sum / self.value_count
+        return max(mean_square - self.mean_value ** 2, self.mean_uncertainty, 0.0)
+
+    @property
+    def mean_uncertainty(self) -> float:
+        return self.uncertainty_sum / max(self.uncertainty_count, 1)
+
+    def update_path_visit(self, uncertainty: float = 0.0):
+        node = self
+        while node is not None:
+            node.visit_count += 1
+            node.uncertainty_count += 1
+            node.uncertainty_sum += uncertainty
+            node = node.parent_node
+
+    def backpropagate_value(self, value: float):
+        node = self
+        while node is not None:
+            node.value_count += 1
+            node.value_sum += value
+            node.value_square_sum += value * value
+            node = node.parent_node
+
+    def get_path_from_root(self) -> List['TreeNode']:
+        path = []
+        node = self
+        while node is not None:
+            if not node.is_root:
+                path.append(node)
+            node = node.parent_node
+        path.reverse()
+        return path
+
+    def get_precision_weighted_local_advantage(self, tau: float = 1.0, epsilon: float = 1e-6) -> float:
+        if self.parent_node is None:
+            return 0.0
+        siblings = self.parent_node.child_node
+        if len(siblings) <= 1:
+            return 0.0
+
+        weights = [1.0 / (sibling.value_variance + epsilon) for sibling in siblings]
+        total_weight = sum(weights)
+        baseline = sum(weight * sibling.mean_value for weight, sibling in zip(weights, siblings)) / max(total_weight, epsilon)
+        sibling_mean = sum(sibling.mean_value for sibling in siblings) / len(siblings)
+        sibling_var = sum((sibling.mean_value - sibling_mean) ** 2 for sibling in siblings) / len(siblings)
+        confidence_gate = 1.0 / (1.0 + tau * self.value_variance)
+        return confidence_gate * (self.mean_value - baseline) / math.sqrt(sibling_var + epsilon)
+
+    def _umcts_score(
+            self,
+            node: 'TreeNode',
+            ucb_c: float,
+            uncertainty_coef: float,
+            value_coef: float,
+            prior_coef: float,
+            cost_coef: float,
+        ) -> float:
+        sibling_visits = 0
+        if node.parent_node is not None:
+            sibling_visits = sum(child.visit_count for child in node.parent_node.child_node)
+        _ = ucb_c  # Kept for backward-compatible configs; UMCTS uses prior_coef as c_p.
+        exploitation = value_coef * node.mean_value
+        uncertainty_bonus = uncertainty_coef * math.sqrt(max(node.value_variance, 0.0))
+        prior_bonus = prior_coef * node.policy_prior * math.sqrt(sibling_visits + 1.0) / (1.0 + node.visit_count)
+        cost_penalty = cost_coef * node.interaction_cost
+        return exploitation + uncertainty_bonus + prior_bonus - cost_penalty
+
+    def get_expand_node(
+            self,
+            n: int = 1,
+            mode: str = 'random',
+            ucb_c: float = 1.0,
+            uncertainty_coef: float = 1.0,
+            value_coef: float = 1.0,
+            prior_coef: float = 1.0,
+            cost_coef: float = 0.0,
+        ) -> List['TreeNode']:
         """
         Sample n nodes from the subtree
         """
@@ -137,32 +236,49 @@ class TreeNode:
         for node in self.get_subtree_nodes():
             if not node.is_leaf:
                 candidate_set.append(node)
-        result = random.choices(candidate_set, k=n)
+        if mode == 'umcts':
+            ranked = sorted(
+                candidate_set,
+                key=lambda node: self._umcts_score(node, ucb_c, uncertainty_coef, value_coef, prior_coef, cost_coef),
+                reverse=True,
+            )
+            if len(ranked) >= n:
+                result = ranked[:n]
+            else:
+                result = ranked + random.choices(ranked, k=n - len(ranked))
+        else:
+            result = random.choices(candidate_set, k=n)
                 
         assert len(result) == n, f"get_expand_node error, len(result)={len(result)} != n={n}"
         return result
 
-    def sample_leaf(self, n: int = 1) -> List['TreeNode']:
+    def sample_leaf(self, n: int = 1, mode: str = 'random') -> List['TreeNode']:
         """
         Sample n leaves, then prune the tree (drop the unselected nodes)
         """
 
-        candidate_uid_set = []
+        candidate_nodes = []
 
         for node in self.get_subtree_nodes():
             if node.is_leaf:
-                candidate_uid_set.append(node.node_uid)
+                candidate_nodes.append(node)
 
-        if len(candidate_uid_set) < n:
-            dprint(f"root={self.node_uid}, candidate_uid_set={candidate_uid_set}")
+        if len(candidate_nodes) < n:
+            dprint(f"root={self.node_uid}, candidate_nodes={[node.node_uid for node in candidate_nodes]}")
             subtree_nodes = self.get_subtree_nodes()
             subtree_node_uids = [node.node_uid for node in subtree_nodes]
             dprint(f"all subtree nodes={subtree_node_uids}")
-        assert len(candidate_uid_set) >= n, f"root={self.node_uid}, candidate_uid_set len={len(candidate_uid_set)} < n={n}"
 
-        random.shuffle(candidate_uid_set)
-        dprint(f'original candidate_uid_set len={len(candidate_uid_set)}')
-        candidate_uid_set = candidate_uid_set[:n]
+        if mode == 'umcts':
+            candidate_nodes = sorted(
+                candidate_nodes,
+                key=lambda node: max(node.uncertainty, node.mean_uncertainty),
+                reverse=True,
+            )
+        else:
+            random.shuffle(candidate_nodes)
+        dprint(f'original candidate_nodes len={len(candidate_nodes)}')
+        candidate_uid_set = [node.node_uid for node in candidate_nodes[:n]]
         dprint(f'sampled candidate_uid_set len={len(candidate_uid_set)}')
         self._prune_subtree(candidate_uid_set)
 
@@ -170,6 +286,10 @@ class TreeNode:
         for node in self.get_subtree_nodes():
             if node.is_leaf:
                 result.append(node)
+
+        if len(result) < n:
+            result = result + random.choices(result, k=n - len(result))
+
         return result
 
     def set_leaf_original_score(self, score: float):
@@ -310,5 +430,3 @@ class TreeNode:
             node.parent_node = None
 
             node.log_prob_list.clear()
-
-        
