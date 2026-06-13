@@ -1020,17 +1020,16 @@ class LLMGenerationTreeSearchManager:
         search_queries = [
             content
             for action, content, active in zip(cur_actions, contents, active_mask)
-            if action == 'search' and active
+            if active and action == 'search'
         ]
+        active_search_count = sum(
+            1 for action, active in zip(cur_actions, active_mask) if active and action == 'search'
+        )
         if do_search:
             search_results = self.batch_search(search_queries)
-            assert len(search_results) == sum(
-                1 for action, active in zip(cur_actions, active_mask) if action == 'search' and active
-            )
+            assert len(search_results) == active_search_count
         else:
-            search_results = [''] * sum(
-                1 for action, active in zip(cur_actions, active_mask) if action == 'search' and active
-            )
+            search_results = [''] * active_search_count
 
         for i, (action, active) in enumerate(zip(cur_actions, active_mask)):
             

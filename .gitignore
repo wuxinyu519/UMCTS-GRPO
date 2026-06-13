@@ -1,0 +1,19 @@
+# Local runtime outputs
+data/
+logs/
+outputs/
+results/
+run_info/
+.cache/
+verl_log/
+/UMCTS-GRPO/
+
+# Python build/cache artifacts
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# Editor/system files
+.DS_Store
+.vscode/

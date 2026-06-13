@@ -263,11 +263,8 @@ class TreeNode:
             if node.is_leaf:
                 candidate_nodes.append(node)
 
-        if len(candidate_nodes) < n:
-            dprint(f"root={self.node_uid}, candidate_nodes={[node.node_uid for node in candidate_nodes]}")
-            subtree_nodes = self.get_subtree_nodes()
-            subtree_node_uids = [node.node_uid for node in subtree_nodes]
-            dprint(f"all subtree nodes={subtree_node_uids}")
+        if not candidate_nodes:
+            raise ValueError(f"root={self.node_uid} has no leaf candidates to sample")
 
         if mode == 'umcts':
             candidate_nodes = sorted(
@@ -286,10 +283,9 @@ class TreeNode:
         for node in self.get_subtree_nodes():
             if node.is_leaf:
                 result.append(node)
-
         if len(result) < n:
+            dprint(f"root={self.node_uid}, sampled leaves len={len(result)} < n={n}; sampling with replacement")
             result = result + random.choices(result, k=n - len(result))
-
         return result
 
     def set_leaf_original_score(self, score: float):
