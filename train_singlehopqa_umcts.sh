@@ -92,10 +92,14 @@ echo "Result dir: $RESULT_DIR"
 
 ulimit -n 65535
 
-ray job submit --address=$RAY_DASHBOARD_ADDRESS \
-    --runtime-env=verl/trainer/runtime_env.yaml \
-    -- \
-    python3 -m verl.trainer.main_ppo_format_ts \
+if [[ -n "${RAY_ADDRESS:-}" ]]; then
+    echo "Running training directly with RAY_ADDRESS=$RAY_ADDRESS"
+    CMD_PREFIX=("${PYTHON_BIN:-python3}" -m verl.trainer.main_ppo_format_ts)
+else
+    CMD_PREFIX=(ray job submit --address="$RAY_DASHBOARD_ADDRESS" --runtime-env=verl/trainer/runtime_env.yaml -- python3 -m verl.trainer.main_ppo_format_ts)
+fi
+
+"${CMD_PREFIX[@]}" \
     data.train_files=$DATA_DIR/train.parquet \
     data.val_files=$DATA_DIR/test.parquet \
     data.train_data_num=null \
@@ -154,7 +158,7 @@ ray job submit --address=$RAY_DASHBOARD_ADDRESS \
     actor_rollout_ref.rollout.n_agent=1 \
     actor_rollout_ref.rollout.temperature=1 \
     actor_rollout_ref.actor.state_masking=true \
-    trainer.logger="['swanlab', 'console']" \
+    trainer.logger="['console']" \
     +trainer.val_only=false \
     +trainer.val_before_train=false \
     trainer.default_hdfs_dir=null \

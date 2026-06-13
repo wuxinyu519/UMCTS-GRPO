@@ -52,14 +52,13 @@ data/wiki18/e5_Flat.index
 data/wiki18/wiki-18.jsonl
 ```
 
-## 4. Prepare QA Datasets
+## 4. Prepare Single-Hop QA Dataset
 
 Run in the `treegrpo` environment:
 
 ```bash
 conda activate treegrpo
 bash scripts/data_process/data_process_singlehop.sh
-bash scripts/data_process/data_process_multihop.sh
 ```
 
 Expected files:
@@ -67,8 +66,6 @@ Expected files:
 ```text
 data/singlehopqa/train.parquet
 data/singlehopqa/test.parquet
-data/multihopqa/train.parquet
-data/multihopqa/test.parquet
 ```
 
 ## 5. Prepare Models
@@ -106,6 +103,13 @@ By default, the training scripts expect:
 http://127.0.0.1:8000/retrieve
 ```
 
+On Delta, the Slurm retriever helper starts the server and writes the URL to
+`run_info/retriever_url.txt`:
+
+```bash
+sbatch submit_retriever_2gpu.sbatch
+```
+
 ## 7. Start Ray For Training
 
 UMCTS training follows the Tree-GRPO default launch style: start a Ray head with dashboard/job server, then run the training script. The retriever uses separate GPUs and is not included in the training GPU count.
@@ -133,26 +137,49 @@ conda activate treegrpo
 RUN_ID=qwen25-15b_singlehop_run1 bash train_singlehopqa_umcts.sh
 ```
 
-Multi-hop QA:
+On Delta, `submit_train_8gpu.sbatch` starts Ray inside the Slurm allocation and
+runs single-hop QA. By default it requests one full A100 8-GPU node:
 
 ```bash
-conda activate treegrpo
-RUN_ID=qwen25-15b_multihop_run1 bash train_multihopqa_umcts.sh
+sbatch submit_train_8gpu.sbatch
 ```
 
-Web-agent QA:
+Preset submit scripts are provided for common parameter sweeps. Each preset is
+an independent single-hop QA Slurm job:
 
 ```bash
-conda activate treegrpo
-RUN_ID=qwen25-15b_webagent_run1 bash train_webagent_umcts.sh
+sbatch submit_train_param1.sbatch  # baseline: threshold 0.85, tau 1.0
+sbatch submit_train_param2.sbatch  # stricter clustering: threshold 0.90
+sbatch submit_train_param3.sbatch  # looser clustering: threshold 0.80
+sbatch submit_train_param4.sbatch  # stronger confidence gate: tau 2.0
 ```
 
-Use a new `RUN_ID` for each run. Existing result directories are not overwritten.
+Each preset requests one `gpuA100x8` node by default. Existing result
+directories are not overwritten. If a result directory already exists, the run
+exits instead of replacing it.
 
 Training outputs are saved under:
 
 ```text
 results/<dataset>/<model>/<run_name>/
+```
+
+For example, the preset scripts save to directories like:
+
+```text
+results/singlehopqa/Qwen2.5-1.5B-Instruct/singlehopqa-umcts-qwen2.5-3b-qwen25-15b_singlehop_1/
+results/singlehopqa/Qwen2.5-1.5B-Instruct/singlehopqa-umcts-qwen2.5-3b-qwen25-15b_singlehop_2/
+```
+
+Each result directory contains:
+
+```text
+logs/verl.log
+config/run.env
+config/train_script.sh
+config/git_commit.txt
+config/git_diff.patch
+checkpoints/
 ```
 
 ## 9. Useful Commands
@@ -181,3 +208,29 @@ Check retriever URL:
 ```bash
 cat run_info/retriever_url.txt
 ```
+
+## 10. Script Summary
+
+| Script | What it runs | Default resources | Output location |
+|---|---|---|---|
+| `submit_retriever_2gpu.sbatch` | Starts the retrieval server and writes `run_info/retriever_url.txt` | 1 `gpuA100x4` node, 2 GPUs | Slurm logs in `logs/umcts_retriever_<JOBID>.out/.err` |
+| `submit_train_8gpu.sbatch` | Starts Ray in the Slurm allocation and runs `TRAIN_SCRIPT`; defaults to `train_singlehopqa_umcts.sh` | 1 `gpuA100x8` node, 8 GPUs | Results under `results/singlehopqa/<model>/<run_name>/`; Slurm logs in `logs/umcts_train_<JOBID>.out/.err` |
+| `submit_train_param1.sbatch` | Single-hop UMCTS baseline, threshold `0.85`, tau `1.0` | 1 `gpuA100x8` node, 8 GPUs | `results/singlehopqa/Qwen2.5-1.5B-Instruct/..._singlehop_1/` |
+| `submit_train_param2.sbatch` | Single-hop UMCTS with stricter clustering, threshold `0.90` | 1 `gpuA100x8` node, 8 GPUs | `results/singlehopqa/Qwen2.5-1.5B-Instruct/..._singlehop_2/` |
+| `submit_train_param3.sbatch` | Single-hop UMCTS with looser clustering, threshold `0.80` | 1 `gpuA100x8` node, 8 GPUs | `results/singlehopqa/Qwen2.5-1.5B-Instruct/..._singlehop_3/` |
+| `submit_train_param4.sbatch` | Single-hop UMCTS with stronger confidence gate, tau `2.0` | 1 `gpuA100x8` node, 8 GPUs | `results/singlehopqa/Qwen2.5-1.5B-Instruct/..._singlehop_4/` |
+| `train_singlehopqa_umcts.sh` | The actual single-hop UMCTS training command and hyperparameter overrides | Uses the Ray cluster started by the submit script | Writes `logs/verl.log`, config snapshots, and checkpoints under the result directory |
+
+Every training result directory contains:
+
+```text
+logs/verl.log
+config/run.env
+config/train_script.sh
+config/git_commit.txt
+config/git_diff.patch
+checkpoints/
+```
+
+Use a new `RUN_ID` or a different preset script for each run. Existing result
+directories are never overwritten.
