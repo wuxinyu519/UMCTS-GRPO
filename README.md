@@ -148,10 +148,10 @@ Preset submit scripts are provided for common parameter sweeps. Each preset is
 an independent single-hop QA Slurm job:
 
 ```bash
-sbatch submit_train_param1.sbatch  # baseline: threshold 0.85, tau 1.0
-sbatch submit_train_param2.sbatch  # stricter clustering: threshold 0.90
-sbatch submit_train_param3.sbatch  # looser clustering: threshold 0.80
-sbatch submit_train_param4.sbatch  # stronger confidence gate: tau 2.0
+sbatch submit_train_param1.sbatch  # baseline: l=1, c_u=1.0, lambda_l=1.0
+sbatch submit_train_param2.sbatch  # more search: l=2, c_u=1.0, lambda_l=1.0
+sbatch submit_train_param3.sbatch  # conservative uncertainty: l=1, c_u=0.5
+sbatch submit_train_param4.sbatch  # aggressive uncertainty: l=1, c_u=2.0
 ```
 
 Each preset requests one `gpuA100x8` node by default. Existing result
@@ -215,10 +215,10 @@ cat run_info/retriever_url.txt
 |---|---|---|---|
 | `submit_retriever_2gpu.sbatch` | Starts the retrieval server and writes `run_info/retriever_url.txt` | 1 `gpuA100x4` node, 2 GPUs | Slurm logs in `logs/umcts_retriever_<JOBID>.out/.err` |
 | `submit_train_8gpu.sbatch` | Starts Ray in the Slurm allocation and runs `TRAIN_SCRIPT`; defaults to `train_singlehopqa_umcts.sh` | 1 `gpuA100x8` node, 8 GPUs | Results under `results/singlehopqa/<model>/<run_name>/`; Slurm logs in `logs/umcts_train_<JOBID>.out/.err` |
-| `submit_train_param1.sbatch` | Single-hop UMCTS baseline, threshold `0.85`, tau `1.0` | 1 `gpuA100x8` node, 8 GPUs | `results/singlehopqa/Qwen2.5-1.5B-Instruct/..._singlehop_1/` |
-| `submit_train_param2.sbatch` | Single-hop UMCTS with stricter clustering, threshold `0.90` | 1 `gpuA100x8` node, 8 GPUs | `results/singlehopqa/Qwen2.5-1.5B-Instruct/..._singlehop_2/` |
-| `submit_train_param3.sbatch` | Single-hop UMCTS with looser clustering, threshold `0.80` | 1 `gpuA100x8` node, 8 GPUs | `results/singlehopqa/Qwen2.5-1.5B-Instruct/..._singlehop_3/` |
-| `submit_train_param4.sbatch` | Single-hop UMCTS with stronger confidence gate, tau `2.0` | 1 `gpuA100x8` node, 8 GPUs | `results/singlehopqa/Qwen2.5-1.5B-Instruct/..._singlehop_4/` |
+| `submit_train_param1.sbatch` | Single-hop UMCTS baseline: `l=1`, `c_u=1.0`, `lambda_l=1.0` | 1 `gpuA100x8` node, 8 GPUs | `results/singlehopqa/Qwen2.5-1.5B-Instruct/..._singlehop_1/` |
+| `submit_train_param2.sbatch` | Single-hop UMCTS with more search: `l=2`, `c_u=1.0`, `lambda_l=1.0` | 1 `gpuA100x8` node, 8 GPUs | `results/singlehopqa/Qwen2.5-1.5B-Instruct/..._singlehop_2/` |
+| `submit_train_param3.sbatch` | Single-hop UMCTS with conservative uncertainty: `l=1`, `c_u=0.5`, `lambda_l=1.0` | 1 `gpuA100x8` node, 8 GPUs | `results/singlehopqa/Qwen2.5-1.5B-Instruct/..._singlehop_3/` |
+| `submit_train_param4.sbatch` | Single-hop UMCTS with aggressive uncertainty: `l=1`, `c_u=2.0`, `lambda_l=1.0` | 1 `gpuA100x8` node, 8 GPUs | `results/singlehopqa/Qwen2.5-1.5B-Instruct/..._singlehop_4/` |
 | `train_singlehopqa_umcts.sh` | The actual single-hop UMCTS training command and hyperparameter overrides | Uses the Ray cluster started by the submit script | Writes `logs/verl.log`, config snapshots, and checkpoints under the result directory |
 
 Every training result directory contains:
