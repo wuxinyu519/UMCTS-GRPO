@@ -17,8 +17,9 @@ total_gpus=$((N_NODES * n_gpus_per_node))
 train_batch_size=$((total_gpus * 64))
 val_batch_size=$((total_gpus * 16))
 actor_ppo_mini_batch_size=$((total_gpus * 8))
-actor_ppo_micro_batch_size=$((n_gpus_per_node * 4))
-log_prob_micro_batch_size=$((n_gpus_per_node * 4))
+actor_ppo_micro_batch_size=${ACTOR_PPO_MICRO_BATCH_SIZE:-$((n_gpus_per_node * 4))}
+log_prob_micro_batch_size=${LOG_PROB_MICRO_BATCH_SIZE:-$((n_gpus_per_node * 4))}
+trainer_save_freq=${TRAINER_SAVE_FREQ:-60}
 
 tree_search_m=${tree_search_m:-2}
 tree_search_n=${tree_search_n:-2}
@@ -164,7 +165,7 @@ fi
     trainer.default_hdfs_dir=null \
     trainer.n_gpus_per_node=$n_gpus_per_node \
     trainer.nnodes=$N_NODES \
-    trainer.save_freq=60 \
+    trainer.save_freq=$trainer_save_freq \
     trainer.test_freq=60 \
     trainer.project_name=$WAND_PROJECT \
     trainer.experiment_name=$RUN_NAME \
