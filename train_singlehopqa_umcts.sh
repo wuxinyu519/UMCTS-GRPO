@@ -20,6 +20,8 @@ actor_ppo_mini_batch_size=$((total_gpus * 8))
 actor_ppo_micro_batch_size=${ACTOR_PPO_MICRO_BATCH_SIZE:-$((n_gpus_per_node * 4))}
 log_prob_micro_batch_size=${LOG_PROB_MICRO_BATCH_SIZE:-$((n_gpus_per_node * 4))}
 trainer_save_freq=${TRAINER_SAVE_FREQ:-60}
+resume_actor_path=${RESUME_ACTOR_PATH:-null}
+resume_global_step=${RESUME_GLOBAL_STEP:-0}
 
 tree_search_m=${tree_search_m:-2}
 tree_search_n=${tree_search_n:-2}
@@ -85,6 +87,8 @@ mkdir -p "$RESULT_DIR/logs" "$RESULT_DIR/config" "$RESULT_DIR/checkpoints" verl_
     echo "umcts_inter_advantage_weight=$UMCTS_INTER_ADVANTAGE_WEIGHT"
     echo "umcts_local_advantage_weight=$UMCTS_LOCAL_ADVANTAGE_WEIGHT"
     echo "umcts_gamma=$UMCTS_GAMMA"
+    echo "resume_actor_path=$resume_actor_path"
+    echo "resume_global_step=$resume_global_step"
     echo "result_dir=$RESULT_DIR"
 } > "$RESULT_DIR/config/run.env"
 cp "$0" "$RESULT_DIR/config/train_script.sh"
@@ -174,6 +178,8 @@ fi
     trainer.experiment_name=$RUN_NAME \
     trainer.total_epochs=2 \
     trainer.total_training_steps=180 \
+    +trainer.resume_actor_path=$resume_actor_path \
+    +trainer.resume_global_step=$resume_global_step \
     trainer.default_hdfs_dir=null \
     trainer.default_local_dir=$RESULT_DIR/checkpoints \
     reward_model.structure_format_score=0.2 \
