@@ -125,6 +125,14 @@ cd UMCTS-GRPO
 conda activate treegrpo
 ```
 
+Top-level run scripts:
+
+```text
+submit_sweep_singlehop_all_models.sh      single-hop, all configured models, default UMCTS parameters
+submit_sweep_multihop_all_models.sh      multi-hop, all configured models, default UMCTS parameters
+submit_sweep_all_models_all_params.sh    single-hop + multi-hop, all configured models, all 6 parameter settings
+```
+
 Single-hop, all configured models, default UMCTS parameters:
 
 ```bash
@@ -148,6 +156,11 @@ The all-parameter sweep submits/runs:
 ```text
 5 models x 2 datasets x 6 parameter settings = 60 runs
 ```
+
+`submit_sweep_all_models_all_params.sh` is the most complete run. Use it only
+after the environment, datasets, models, retriever index, and Slurm submission
+flow have been verified. For a first cluster test, start with
+`submit_sweep_singlehop_all_models.sh` or set `DRY_RUN=1`.
 
 The scripts expect these model directories:
 
