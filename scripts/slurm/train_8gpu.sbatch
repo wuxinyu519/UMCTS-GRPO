@@ -14,7 +14,7 @@
 
 set -euo pipefail
 
-REPO_DIR=${REPO_DIR:-${SLURM_SUBMIT_DIR:-$(pwd)}}
+REPO_DIR=${REPO_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}
 DATA_DIR=${DATA_DIR:-${REPO_DIR}/data/singlehopqa}
 BASE_MODEL=${BASE_MODEL:-${REPO_DIR}/data/models/Qwen2.5-1.5B-Instruct}
 UMCTS_EMBEDDING_MODEL=${UMCTS_EMBEDDING_MODEL:-${REPO_DIR}/data/models/e5-base-v2}
@@ -23,9 +23,19 @@ TRAIN_ENV_PREFIX=${TRAIN_ENV_PREFIX:-/u/xwu20/.conda/envs/${TRAIN_ENV}}
 PYTHON_BIN=${PYTHON_BIN:-${TRAIN_ENV_PREFIX}/bin/python}
 RAY_BIN=${RAY_BIN:-${TRAIN_ENV_PREFIX}/bin/ray}
 TRAIN_SCRIPT=${TRAIN_SCRIPT:-train_singlehopqa_umcts.sh}
-RETRIEVER_WAIT_SECONDS=${RETRIEVER_WAIT_SECONDS:-7200}
+RETRIEVER_ENV=${RETRIEVER_ENV:-retriever}
+RETRIEVER_ENV_PREFIX=${RETRIEVER_ENV_PREFIX:-/u/xwu20/.conda/envs/${RETRIEVER_ENV}}
+RETRIEVER_PYTHON_BIN=${RETRIEVER_PYTHON_BIN:-${RETRIEVER_ENV_PREFIX}/bin/python}
+RETRIEVER_INDEX_FILE=${RETRIEVER_INDEX_FILE:-${REPO_DIR}/data/wiki18/e5_Flat.index}
+RETRIEVER_CORPUS_FILE=${RETRIEVER_CORPUS_FILE:-${REPO_DIR}/data/wiki18/wiki-18.jsonl}
+RETRIEVER_MODEL=${RETRIEVER_MODEL:-${REPO_DIR}/data/models/e5-base-v2}
+RETRIEVER_NAME=${RETRIEVER_NAME:-e5}
+RETRIEVER_TOPK=${RETRIEVER_TOPK:-3}
+RETRIEVER_PORT=${RETRIEVER_PORT:-8000}
+RETRIEVER_CUDA_VISIBLE_DEVICES=${RETRIEVER_CUDA_VISIBLE_DEVICES:-0,1}
+TRAIN_CUDA_VISIBLE_DEVICES=${TRAIN_CUDA_VISIBLE_DEVICES:-2,3,4,5,6,7}
 N_NODES=1
-N_GPUS_PER_NODE=8
+N_GPUS_PER_NODE=${N_GPUS_PER_NODE:-6}
 N_CPUS_PER_NODE=${N_CPUS_PER_NODE:-${SLURM_CPUS_PER_TASK:-8}}
 
 unset ${!CONDA_@} _CE_CONDA _CE_M
@@ -35,30 +45,69 @@ export RAY_USAGE_STATS_ENABLED=0
 export RAY_raylet_start_wait_time_s=${RAY_raylet_start_wait_time_s:-120}
 export SWANLAB_MODE=${SWANLAB_MODE:-local}
 export SWANLAB_LOG_DIR=${SWANLAB_LOG_DIR:-${REPO_DIR}/swanlab_log}
-export RAY_DASHBOARD_ADDRESS=${RAY_DASHBOARD_ADDRESS:-http://127.0.0.1:8265}
 
 cd "$REPO_DIR"
-mkdir -p logs
+mkdir -p logs run_info
+
+cleanup() {
+    "$RAY_BIN" stop --force >/dev/null 2>&1 || true
+    if [[ -n "${RETRIEVER_PID:-}" ]]; then
+        kill "$RETRIEVER_PID" >/dev/null 2>&1 || true
+        wait "$RETRIEVER_PID" >/dev/null 2>&1 || true
+    fi
+}
+trap cleanup EXIT
 
 if [[ -z "${RETRIEVER_URL:-}" ]]; then
-    echo "Waiting up to ${RETRIEVER_WAIT_SECONDS}s for run_info/retriever_url.txt ..."
-    waited=0
-    while [[ ! -s run_info/retriever_url.txt && "$waited" -lt "$RETRIEVER_WAIT_SECONDS" ]]; do
-        sleep 10
-        waited=$((waited + 10))
+    RETRIEVER_URL="http://127.0.0.1:${RETRIEVER_PORT}/retrieve"
+    echo "$RETRIEVER_URL" > run_info/retriever_url.txt
+
+    echo "Starting retriever on GPUs ${RETRIEVER_CUDA_VISIBLE_DEVICES}"
+    CUDA_VISIBLE_DEVICES="$RETRIEVER_CUDA_VISIBLE_DEVICES" "$RETRIEVER_PYTHON_BIN" search_r1/search/retrieval_server.py \
+        --index_path "$RETRIEVER_INDEX_FILE" \
+        --corpus_path "$RETRIEVER_CORPUS_FILE" \
+        --topk "$RETRIEVER_TOPK" \
+        --retriever_name "$RETRIEVER_NAME" \
+        --retriever_model "$RETRIEVER_MODEL" \
+        --faiss_gpu \
+        > "logs/umcts_retriever_${SLURM_JOB_ID}.log" 2>&1 &
+    RETRIEVER_PID=$!
+
+    echo "Waiting for retriever at ${RETRIEVER_URL} ..."
+    retriever_ready=0
+    for attempt in $(seq 1 120); do
+        if ! kill -0 "$RETRIEVER_PID" >/dev/null 2>&1; then
+            echo "ERROR: Retriever process exited before becoming ready."
+            tail -100 "logs/umcts_retriever_${SLURM_JOB_ID}.log" || true
+            exit 1
+        fi
+        if curl -fsS -X POST "$RETRIEVER_URL" \
+            -H "Content-Type: application/json" \
+            -d '{"queries":["who got the first nobel prize in physics"],"topk":3,"return_scores":true}' >/dev/null 2>&1; then
+            retriever_ready=1
+            echo "Retriever is ready."
+            break
+        fi
+        sleep 5
     done
-    if [[ ! -s run_info/retriever_url.txt ]]; then
-        echo "ERROR: Retriever URL was not created within ${RETRIEVER_WAIT_SECONDS}s."
+    if [[ "$retriever_ready" -ne 1 ]]; then
+        echo "ERROR: Retriever did not become ready at ${RETRIEVER_URL}."
+        tail -100 "logs/umcts_retriever_${SLURM_JOB_ID}.log" || true
         exit 1
     fi
-    RETRIEVER_URL=$(cat run_info/retriever_url.txt)
+else
+    echo "$RETRIEVER_URL" > run_info/retriever_url.txt
 fi
+
 export DATA_DIR BASE_MODEL UMCTS_EMBEDDING_MODEL RETRIEVER_URL N_NODES N_GPUS_PER_NODE N_CPUS_PER_NODE PYTHON_BIN
+export CUDA_VISIBLE_DEVICES="$TRAIN_CUDA_VISIBLE_DEVICES"
 
 echo "=== Training Job Info ==="
 echo "Job ID: ${SLURM_JOB_ID}"
 echo "Node: ${SLURMD_NODENAME}"
 echo "Retriever URL: ${RETRIEVER_URL}"
+echo "Retriever GPUs: ${RETRIEVER_CUDA_VISIBLE_DEVICES}"
+echo "Training GPUs: ${CUDA_VISIBLE_DEVICES}"
 echo "Train script: ${TRAIN_SCRIPT}"
 echo "Nodes: ${N_NODES}"
 echo "GPUs per node: ${N_GPUS_PER_NODE}"
@@ -70,26 +119,22 @@ nvidia-smi
 "$RAY_BIN" stop --force || true
 
 RAY_PORT=${RAY_PORT:-6379}
-"$RAY_BIN" start --head \
-    --node-ip-address=127.0.0.1 \
-    --port="$RAY_PORT" \
-    --dashboard-host=127.0.0.1 \
-    --num-gpus="$N_GPUS_PER_NODE" \
-    --num-cpus="$N_CPUS_PER_NODE"
+export RAY_ADDRESS="127.0.0.1:${RAY_PORT}"
+"$RAY_BIN" start --head --node-ip-address=127.0.0.1 --port="$RAY_PORT" --include-dashboard=false --num-gpus="$N_GPUS_PER_NODE" --num-cpus="$N_CPUS_PER_NODE"
 
-echo "Waiting for Ray dashboard at ${RAY_DASHBOARD_ADDRESS} ..."
+echo "Waiting for Ray core at ${RAY_ADDRESS} ..."
 ray_ready=0
 for attempt in $(seq 1 60); do
-    if curl -fsS "${RAY_DASHBOARD_ADDRESS}/api/version" >/dev/null 2>&1; then
+    if "$RAY_BIN" status --address="$RAY_ADDRESS" >/dev/null 2>&1; then
         ray_ready=1
-        echo "Ray dashboard is ready."
+        echo "Ray core is ready."
         break
     fi
     sleep 5
 done
 
 if [[ "$ray_ready" -ne 1 ]]; then
-    echo "ERROR: Ray dashboard did not become ready at ${RAY_DASHBOARD_ADDRESS}."
+    echo "ERROR: Ray core did not become ready at ${RAY_ADDRESS}."
     ls -l /tmp/ray/session_latest/logs 2>/dev/null || true
     for f in /tmp/ray/session_latest/logs/gcs_server.err /tmp/ray/session_latest/logs/gcs_server.out /tmp/ray/session_latest/logs/raylet.err /tmp/ray/session_latest/logs/monitor.err; do
         echo "=== $f ==="
@@ -99,5 +144,3 @@ if [[ "$ray_ready" -ne 1 ]]; then
 fi
 
 bash "$TRAIN_SCRIPT"
-
-"$RAY_BIN" stop --force || true

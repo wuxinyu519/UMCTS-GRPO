@@ -27,6 +27,7 @@ INDEX_FILE=${INDEX_FILE:-${REPO_DIR}/data/wiki18/e5_Flat.index}
 CORPUS_FILE=${CORPUS_FILE:-${REPO_DIR}/data/wiki18/wiki-18.jsonl}
 RETRIEVER_MODEL=${RETRIEVER_MODEL:-${REPO_DIR}/data/models/e5-base-v2}
 UMCTS_EMBEDDING_MODEL=${UMCTS_EMBEDDING_MODEL:-${REPO_DIR}/data/models/e5-base-v2}
+RETRIEVER_PER_TRAIN_JOB=${RETRIEVER_PER_TRAIN_JOB:-1}
 
 check_retriever_url() {
     local url="$1"
@@ -60,6 +61,13 @@ wait_for_retriever() {
 ensure_retriever() {
     cd "$REPO_DIR"
     mkdir -p logs run_info
+
+    if [[ "$BACKEND" == "slurm" && "$RETRIEVER_PER_TRAIN_JOB" == "1" ]]; then
+        echo "Slurm backend: each training job will start its own local retriever on the same node."
+        unset RETRIEVER_URL
+        rm -f run_info/retriever_url.txt
+        return
+    fi
 
     if [[ -n "${RETRIEVER_URL:-}" ]]; then
         echo "Using RETRIEVER_URL from environment: ${RETRIEVER_URL}"

@@ -170,8 +170,9 @@ STRICT_MODE=1 bash submit_sweep_singlehop_all_models.sh
 ## 7. Optional Slurm Backend
 
 For Slurm clusters, use the same three bash scripts with `BACKEND=slurm`. Each
-training run requests one `gpuA100x8` node by default, and the retriever helper
-requests one `gpuA100x4` node with two GPUs.
+training run requests one `gpuA100x8` node by default. Inside that single node,
+the launcher starts a local retriever on GPUs `0,1`, waits for it to answer
+`/retrieve`, then starts training on GPUs `2,3,4,5,6,7`.
 
 ```bash
 BACKEND=slurm bash submit_sweep_singlehop_all_models.sh
@@ -181,6 +182,17 @@ BACKEND=slurm bash submit_sweep_all_models_all_params.sh
 
 Internal Slurm helper scripts live under `scripts/slurm/`. They are not the
 main user entry points.
+
+The default Slurm training helper is:
+
+```text
+scripts/slurm/train_8gpu.sbatch
+```
+
+It uses `N_GPUS_PER_NODE=6` for training because two of the eight allocated GPUs
+are reserved for the retriever. To use an external shared retriever instead,
+set `RETRIEVER_PER_TRAIN_JOB=0` and provide or start a retriever with
+`scripts/slurm/retriever_2gpu.sbatch`.
 
 ## 8. Results
 
