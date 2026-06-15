@@ -26,9 +26,9 @@ export UMCTS_LOCAL_ADVANTAGE_WEIGHT=${UMCTS_LOCAL_ADVANTAGE_WEIGHT:-1.0}
 export UMCTS_CLUSTER_THRESHOLD=${UMCTS_CLUSTER_THRESHOLD:-0.85}
 export UMCTS_CONFIDENCE_TAU=${UMCTS_CONFIDENCE_TAU:-1.0}
 export N_NODES=${N_NODES:-1}
-export N_GPUS_PER_NODE=${N_GPUS_PER_NODE:-8}
+export N_GPUS_PER_NODE=${N_GPUS_PER_NODE:-6}
 export N_CPUS_PER_NODE=${N_CPUS_PER_NODE:-64}
 
 REPO_DIR=${REPO_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}
 cd "$REPO_DIR"
-exec bash submit_train_8gpu.sbatch
+exec bash scripts/slurm/train_8gpu.sbatch

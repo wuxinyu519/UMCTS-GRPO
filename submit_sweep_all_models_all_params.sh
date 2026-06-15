@@ -19,12 +19,13 @@ datasets=(
 )
 
 params=(
-  "default|1|1.0|1.0|1.0"
-  "cu0p5|1|0.5|1.0|1.0"
-  "cu2p0|1|2.0|1.0|1.0"
-  "local2p0|1|1.0|2.0|1.0"
-  "tau5p0|1|1.0|1.0|5.0"
-  "tau0p1|1|1.0|1.0|0.1"
+  "default|1|1.0|1.0|1.0|1.0"
+  "cu0p5|1|0.5|1.0|1.0|1.0"
+  "cu2p0|1|2.0|1.0|1.0|1.0"
+  "local2p0|1|1.0|2.0|1.0|1.0"
+  "tau5p0|1|1.0|1.0|5.0|1.0"
+  "tau0p1|1|1.0|1.0|0.1|1.0"
+  "param6_cu0p5_ucb0p5|1|0.5|1.0|1.0|0.5"
 )
 
 for dataset_item in "${datasets[@]}"; do
@@ -32,8 +33,8 @@ for dataset_item in "${datasets[@]}"; do
     for model_item in "${models[@]}"; do
         IFS='|' read -r model_slug model_dir <<< "$model_item"
         for param_item in "${params[@]}"; do
-            IFS='|' read -r param_slug tree_l cu local_w tau <<< "$param_item"
-            submit_training_job "$dataset" "$dataset_slug" "$train_script" "$data_dir" "$model_slug" "$model_dir" "$param_slug" "$tree_l" "$cu" "$local_w" "$tau"
+            IFS='|' read -r param_slug tree_l cu local_w tau ucb_c <<< "$param_item"
+            submit_training_job "$dataset" "$dataset_slug" "$train_script" "$data_dir" "$model_slug" "$model_dir" "$param_slug" "$tree_l" "$cu" "$local_w" "$tau" "$ucb_c"
         done
     done
 done

@@ -159,6 +159,7 @@ submit_training_job() {
     local cu="$9"
     local local_w="${10}"
     local tau="${11}"
+    local ucb_c="${12:-1.0}"
 
     local model_path="${MODEL_ROOT}/${model_dir}"
     if [[ ! -d "$model_path" ]]; then
@@ -188,7 +189,7 @@ submit_training_job() {
     fi
 
     if [[ "$BACKEND" == "slurm" ]]; then
-        local export_vars="ALL,REPO_DIR=${REPO_DIR},RETRIEVER_URL=${RETRIEVER_URL},DATASET_NAME=${dataset},DATA_DIR=${data_dir},TRAIN_SCRIPT=${train_script},BASE_MODEL=${model_path},EXPERIMENT_NAME=${experiment_name},RUN_ID=${run_id},tree_search_l=${tree_l},UMCTS_UNCERTAINTY_COEF=${cu},UMCTS_LOCAL_ADVANTAGE_WEIGHT=${local_w},UMCTS_CONFIDENCE_TAU=${tau}"
+        local export_vars="ALL,REPO_DIR=${REPO_DIR},RETRIEVER_URL=${RETRIEVER_URL:-},DATASET_NAME=${dataset},DATA_DIR=${data_dir},TRAIN_SCRIPT=${train_script},BASE_MODEL=${model_path},EXPERIMENT_NAME=${experiment_name},RUN_ID=${run_id},tree_search_l=${tree_l},UMCTS_UNCERTAINTY_COEF=${cu},UMCTS_LOCAL_ADVANTAGE_WEIGHT=${local_w},UMCTS_CONFIDENCE_TAU=${tau},UMCTS_UCB_C=${ucb_c}"
         sbatch --job-name="umcts_${dataset_slug}_${model_slug}_${param_slug}" --export="$export_vars" "$TRAIN_SUBMIT_SCRIPT"
         sleep "$SLEEP_BETWEEN_SUBMITS"
         return
@@ -207,6 +208,7 @@ submit_training_job() {
     PYTHON_BIN="$PYTHON_BIN" \
     tree_search_l="$tree_l" \
     UMCTS_UNCERTAINTY_COEF="$cu" \
+    UMCTS_UCB_C="$ucb_c" \
     UMCTS_LOCAL_ADVANTAGE_WEIGHT="$local_w" \
     UMCTS_CONFIDENCE_TAU="$tau" \
     bash "$train_script"

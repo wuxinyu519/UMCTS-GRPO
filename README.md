@@ -130,7 +130,7 @@ Top-level run scripts:
 ```text
 submit_sweep_singlehop_all_models.sh      single-hop, all configured models, default UMCTS parameters
 submit_sweep_multihop_all_models.sh      multi-hop, all configured models, default UMCTS parameters
-submit_sweep_all_models_all_params.sh    single-hop + multi-hop, all configured models, all 6 parameter settings
+submit_sweep_all_models_all_params.sh    single-hop + multi-hop, all configured models, all 7 parameter settings
 ```
 
 Single-hop, all configured models, default UMCTS parameters:
@@ -145,7 +145,7 @@ Multi-hop, all configured models, default UMCTS parameters:
 bash submit_sweep_multihop_all_models.sh
 ```
 
-Single-hop and multi-hop, all configured models, all six parameter settings:
+Single-hop and multi-hop, all configured models, all seven parameter settings:
 
 ```bash
 bash submit_sweep_all_models_all_params.sh
@@ -154,8 +154,11 @@ bash submit_sweep_all_models_all_params.sh
 The all-parameter sweep submits/runs:
 
 ```text
-5 models x 2 datasets x 6 parameter settings = 60 runs
+5 models x 2 datasets x 7 parameter settings = 70 runs
 ```
+
+The seven parameter settings are `default`, `cu0p5`, `cu2p0`,
+`local2p0`, `tau5p0`, `tau0p1`, and `param6_cu0p5_ucb0p5`.
 
 `submit_sweep_all_models_all_params.sh` is the most complete run. Use it only
 after the environment, datasets, models, retriever index, and Slurm submission
