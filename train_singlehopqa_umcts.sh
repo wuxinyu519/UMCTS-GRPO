@@ -20,6 +20,8 @@ actor_ppo_mini_batch_size=$((total_gpus * 8))
 actor_ppo_micro_batch_size=${ACTOR_PPO_MICRO_BATCH_SIZE:-$((n_gpus_per_node * 4))}
 log_prob_micro_batch_size=${LOG_PROB_MICRO_BATCH_SIZE:-$((n_gpus_per_node * 4))}
 trainer_save_freq=${TRAINER_SAVE_FREQ:-60}
+trainer_test_freq=${TRAINER_TEST_FREQ:-60}
+trainer_total_training_steps=${TRAINER_TOTAL_TRAINING_STEPS:-180}
 resume_actor_path=${RESUME_ACTOR_PATH:-null}
 resume_global_step=${RESUME_GLOBAL_STEP:-0}
 
@@ -89,6 +91,9 @@ mkdir -p "$RESULT_DIR/logs" "$RESULT_DIR/config" "$RESULT_DIR/checkpoints" verl_
     echo "umcts_gamma=$UMCTS_GAMMA"
     echo "resume_actor_path=$resume_actor_path"
     echo "resume_global_step=$resume_global_step"
+    echo "trainer_save_freq=$trainer_save_freq"
+    echo "trainer_test_freq=$trainer_test_freq"
+    echo "trainer_total_training_steps=$trainer_total_training_steps"
     echo "result_dir=$RESULT_DIR"
 } > "$RESULT_DIR/config/run.env"
 cp "$0" "$RESULT_DIR/config/train_script.sh"
@@ -173,11 +178,11 @@ fi
     trainer.n_gpus_per_node=$n_gpus_per_node \
     trainer.nnodes=$N_NODES \
     trainer.save_freq=$trainer_save_freq \
-    trainer.test_freq=60 \
+    trainer.test_freq=$trainer_test_freq \
     trainer.project_name=$WAND_PROJECT \
     trainer.experiment_name=$RUN_NAME \
     trainer.total_epochs=2 \
-    trainer.total_training_steps=180 \
+    trainer.total_training_steps=$trainer_total_training_steps \
     +trainer.resume_actor_path=$resume_actor_path \
     +trainer.resume_global_step=$resume_global_step \
     trainer.default_hdfs_dir=null \
