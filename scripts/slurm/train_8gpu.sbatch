@@ -16,7 +16,7 @@ set -euo pipefail
 
 REPO_DIR=${REPO_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}
 DATA_DIR=${DATA_DIR:-${REPO_DIR}/data/singlehopqa}
-BASE_MODEL=${BASE_MODEL:-${REPO_DIR}/data/models/Qwen2.5-1.5B-Instruct}
+BASE_MODEL=${BASE_MODEL:-${REPO_DIR}/data/models/Qwen2.5-1.5B}
 UMCTS_EMBEDDING_MODEL=${UMCTS_EMBEDDING_MODEL:-${REPO_DIR}/data/models/e5-base-v2}
 TRAIN_ENV=${TRAIN_ENV:-treegrpo}
 TRAIN_ENV_PREFIX=${TRAIN_ENV_PREFIX:-/u/xwu20/.conda/envs/${TRAIN_ENV}}

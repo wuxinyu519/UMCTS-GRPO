@@ -6,7 +6,7 @@ cd "$REPO_DIR"
 ensure_retriever
 
 models=(
-  "qwen25-15b|Qwen2.5-1.5B-Instruct"
+  "qwen25-15b|Qwen2.5-1.5B"
   "qwen25-3b|Qwen2.5-3B"
   "llama32-3b|Llama-3.2-3B"
   "qwen25-7b|Qwen2.5-7B"
