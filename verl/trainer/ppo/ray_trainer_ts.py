@@ -421,6 +421,8 @@ def compute_data_metrics(batch, use_critic=True, reward_mode='tree'):
     if 'valid_search_stats' in batch.meta_info:
         metrics['env/number_of_valid_search'] = float(np.array(batch.meta_info['valid_search_stats'], dtype=np.int16).mean())
 
+    if 'tree_metrics' in batch.meta_info:
+        metrics.update(batch.meta_info['tree_metrics'])
 
     return metrics
 
@@ -914,6 +916,7 @@ class RayPPOTrainer(object):
                             final_gen_batch_output = generation_manager.run_llm_loop_tree_search(
                                 gen_batch=gen_batch,
                                 initial_input_ids=first_input_ids,
+                                global_step=self.global_steps,
                             )
 
                         # final_gen_batch_output.batch.apply(lambda x: x.long(), inplace=True)

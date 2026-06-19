@@ -15,6 +15,24 @@ import numpy as np
 
 from .tree_node import TreeNode, DEBUG, dprint
 
+# Set UMCTS_DUMP_TREES to a file path to dump per-tree rollout data for case study analysis.
+# Leave unset (or empty) during normal training — only enable on inference/analysis runs.
+DUMP_TREES_PATH: str = os.environ.get('UMCTS_DUMP_TREES', '')
+
+
+def _spearman_r(x: list, y: list) -> float:
+    """Spearman rank correlation without scipy dependency."""
+    n = len(x)
+    if n < 3:
+        return 0.0
+    x_arr = np.array(x, dtype=float)
+    y_arr = np.array(y, dtype=float)
+    rx = np.argsort(np.argsort(x_arr)).astype(float)
+    ry = np.argsort(np.argsort(y_arr)).astype(float)
+    d2 = float(np.sum((rx - ry) ** 2))
+    denom = n * (n * n - 1)
+    return 0.0 if denom == 0 else float(1.0 - 6.0 * d2 / denom)
+
 
 @dataclass
 class GenerationTreeSearchConfig:
@@ -809,10 +827,157 @@ class LLMGenerationTreeSearchManager:
         # for i in range(len(tmp_node_list)):
         #     tmp_node_list[i].set_leaf_original_score(original_scores[i])
 
+    def _compute_uncertainty_metrics(self) -> dict:
+        """Compute per-step uncertainty diagnostics logged alongside normal training metrics.
+
+        Shared with Tree-GRPO (for direct curve comparison):
+          tree/leaf_reward_max   — oracle best leaf reward, averaged over trees in batch
+          tree/leaf_reward_mean  — mean leaf reward per tree, averaged over batch
+          tree/leaf_reward_std   — within-tree leaf reward std, averaged over batch
+
+        UMCTS-specific (uncertainty signal quality):
+          tree/uncertainty/mean_qvar          — mean q_variance across all non-root nodes
+          tree/uncertainty/qvar_depth_{d}     — mean q_variance at depth d (1-5)
+          tree/uncertainty/calibration_r      — Spearman r: q_variance vs subtree leaf reward std
+                                                (>0 means uncertainty tracks real outcome variability)
+          tree/uncertainty/confidence_gate_r  — Spearman r: confidence_gate vs -|q_value - reward|
+                                                (>0 means high-confidence nodes have better value estimates)
+        """
+        tau = self.config.umcts_confidence_tau
+
+        calib_qvar, calib_std = [], []
+        gate_list, neg_err_list = [], []
+        depth_qvar: dict = defaultdict(list)
+        all_qvar = []
+
+        oracle_rewards, leaf_means, leaf_stds = [], [], []
+
+        for root in self.root_list:
+            all_nodes = root.get_subtree_nodes()
+            leaf_nodes = [n for n in all_nodes if n.is_leaf]
+            if not leaf_nodes:
+                continue
+
+            leaf_rewards = [float(n.original_score) for n in leaf_nodes]
+            oracle_rewards.append(max(leaf_rewards))
+            leaf_means.append(float(np.mean(leaf_rewards)))
+            leaf_stds.append(float(np.std(leaf_rewards)))
+
+            for node in all_nodes:
+                qv = float(node.q_variance)
+                if not node.is_root:
+                    depth_qvar[node.depth].append(qv)
+                    all_qvar.append(qv)
+
+                if node.is_leaf:
+                    gate = 1.0 / (1.0 + tau * qv)
+                    gate_list.append(gate)
+                    neg_err_list.append(-(abs(float(node.q_value) - float(node.original_score))))
+                else:
+                    desc_leaves = [n for n in node.get_subtree_nodes() if n.is_leaf]
+                    if len(desc_leaves) >= 2:
+                        calib_qvar.append(qv)
+                        calib_std.append(float(np.std([float(n.original_score) for n in desc_leaves])))
+
+        metrics: dict = {}
+
+        if oracle_rewards:
+            metrics['tree/leaf_reward_max'] = float(np.mean(oracle_rewards))
+            metrics['tree/leaf_reward_mean'] = float(np.mean(leaf_means))
+            metrics['tree/leaf_reward_std'] = float(np.mean(leaf_stds))
+
+        if all_qvar:
+            metrics['tree/uncertainty/mean_qvar'] = float(np.mean(all_qvar))
+
+        for depth, vals in depth_qvar.items():
+            if 1 <= depth <= 5:
+                metrics[f'tree/uncertainty/qvar_depth_{depth}'] = float(np.mean(vals))
+
+        metrics['tree/uncertainty/calibration_r'] = _spearman_r(calib_qvar, calib_std)
+        metrics['tree/uncertainty/confidence_gate_r'] = _spearman_r(gate_list, neg_err_list)
+
+        return metrics
+
+    def _dump_trees(
+            self,
+            final_node_list: List[TreeNode],
+            gen_batch: DataProto,
+            global_step: int = 0,
+        ) -> None:
+        """Dump per-tree rollout data to DUMP_TREES_PATH as JSON lines.
+
+        Each line is one tree:
+          { global_step, tree_uid, uid, data_source, question,
+            nodes: [ {node_uid, parent_uid, depth, is_leaf, is_selected,
+                      q_value, q_variance, uncertainty, policy_prior,
+                      visit_count, reward, response} ] }
+
+        Enable by setting UMCTS_DUMP_TREES=/path/to/output.jsonl before launch.
+        """
+        import json
+
+        selected_uids = {node.node_uid for node in final_node_list}
+        pad_id = self.tokenizer.pad_token_id
+
+        for root in self.root_list:
+            src = root.source_index
+
+            # Decode the question from the prompt tensor (last 400 chars for readability)
+            prompt_ids = root.prompts.cpu()
+            valid_prompt = prompt_ids[prompt_ids != pad_id]
+            question_text = self.tokenizer.decode(valid_prompt, skip_special_tokens=True)[-400:]
+
+            non_tensor = gen_batch.non_tensor_batch
+            data_source = str(non_tensor.get('data_source', ['unknown'] * (src + 1))[src])
+            uid = str(non_tensor.get('uid', [''] * (src + 1))[src])
+
+            nodes = []
+            for node in root.get_subtree_nodes():
+                if node.responses is not None:
+                    resp_ids = node.responses.cpu()
+                    # responses are left-padded to a fixed length; find the real content
+                    valid_len = int((resp_ids != pad_id).sum().item())
+                    resp_text = self.tokenizer.decode(
+                        resp_ids[:valid_len], skip_special_tokens=True
+                    )[:600]
+                else:
+                    resp_text = ''
+
+                nodes.append({
+                    'node_uid': node.node_uid,
+                    'parent_uid': node.parent_node.node_uid if node.parent_node else None,
+                    'depth': node.depth,
+                    'is_leaf': node.is_leaf,
+                    'is_selected': node.node_uid in selected_uids,
+                    'q_value': round(float(node.q_value), 4),
+                    'q_variance': round(float(node.q_variance), 4),
+                    'uncertainty': round(float(node.uncertainty), 4),
+                    'policy_prior': round(float(node.policy_prior), 4),
+                    'visit_count': node.visit_count,
+                    'reward': round(float(node.original_score), 4) if node.is_leaf else None,
+                    'response': resp_text,
+                })
+
+            record = {
+                'global_step': global_step,
+                'tree_uid': root.tree_uid,
+                'uid': uid,
+                'data_source': data_source,
+                'question': question_text,
+                'nodes': nodes,
+            }
+
+            try:
+                with open(DUMP_TREES_PATH, 'a') as f:
+                    f.write(json.dumps(record, ensure_ascii=False) + '\n')
+            except Exception as e:
+                print(f'[DUMP_TREES] write failed: {e}')
+
     def run_llm_loop_tree_search(
-            self, 
-            gen_batch, 
+            self,
+            gen_batch,
             initial_input_ids: torch.Tensor,
+            global_step: int = 0,
         ) -> Tuple[Dict, Dict]:
         """Run main LLM generation loop."""
 
@@ -961,10 +1126,15 @@ class LLMGenerationTreeSearchManager:
         meta_info['valid_search_stats'] = valid_search_stats
         meta_info['umcts_inter_advantage_weight'] = self.config.umcts_inter_advantage_weight
         meta_info['umcts_local_advantage_weight'] = self.config.umcts_local_advantage_weight
+        meta_info['tree_metrics'] = self._compute_uncertainty_metrics()
 
         final_output.meta_info = meta_info
 
         final_output.non_tensor_batch['tree_uid'] = np.array(final_tree_uid_list, dtype=object)
+
+        # Dump tree rollout data for case study analysis (only when UMCTS_DUMP_TREES is set)
+        if DUMP_TREES_PATH:
+            self._dump_trees(final_node_list, gen_batch, global_step=global_step)
 
         # Delete the tree
         for root in self.root_list:
