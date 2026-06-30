@@ -771,6 +771,11 @@ class RayPPOTrainer(object):
         self.actor_rollout_wg = all_wg['actor_rollout']
         self.actor_rollout_wg.init_model()
 
+        resume_actor_path = self.config.trainer.get('resume_actor_path', None)
+        if resume_actor_path:
+            print(f'Loading actor checkpoint from {resume_actor_path}')
+            self.actor_rollout_wg.load_checkpoint(resume_actor_path, del_local_after_load=False)
+
     def _save_checkpoint(self):
         actor_local_path = os.path.join(self.config.trainer.default_local_dir, 'actor',
                                         f'global_step_{self.global_steps}')
@@ -812,7 +817,9 @@ class RayPPOTrainer(object):
         pprint(f'Check config changes, kl_fix={self.config.algorithm.kl_fix}, use_kl_in_reward={self.config.algorithm.use_kl_in_reward}')
 
         logger = self.logger
-        self.global_steps = 0
+        self.global_steps = self.config.trainer.get('resume_global_step', 0)
+        if self.global_steps > 0:
+            print(f'Resuming training from global_step={self.global_steps}')
         # perform validation before training
         # currently, we only support validation using the reward_function.
         if self.val_reward_fn is not None and self.config.trainer.get('val_before_train', True):
