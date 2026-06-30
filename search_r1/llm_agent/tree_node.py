@@ -72,6 +72,15 @@ class TreeNode:
         self.value_square_sum = 0.0
         self.uncertainty_count = 0
         self.uncertainty_sum = 0.0
+        self.q_count = 0
+        self.q_mean = 0.0
+        self.q_m2 = 0.0
+        self.q_variance_mean = 0.0
+        self.immediate_reward = 0.0
+        # Var(r_hat): local action uncertainty from sampled-token surprisal and
+        # semantic dispersion. The cluster prior term is zero when all sampled
+        # candidates collapse to the same semantic action.
+        self.immediate_reward_variance = max(float(uncertainty), 0.0) + max(1.0 - float(policy_prior), 0.0)
         self.value_backed_up = False
 
         self.parent_node = parent_node
@@ -146,14 +155,30 @@ class TreeNode:
 
     @property
     def mean_value(self) -> float:
-        return self.value_sum / max(self.value_count, 1)
+        return self.q_value
 
     @property
     def value_variance(self) -> float:
-        if self.value_count <= 1:
-            return max(self.mean_uncertainty, self.uncertainty, 0.0)
-        mean_square = self.value_square_sum / self.value_count
-        return max(mean_square - self.mean_value ** 2, self.mean_uncertainty, 0.0)
+        return self.q_variance
+
+    @property
+    def q_value(self) -> float:
+        return self.q_mean if self.q_count > 0 else 0.0
+
+    @property
+    def empirical_q_variance(self) -> float:
+        if self.q_count <= 1:
+            return 0.0
+        return max(self.q_m2 / (self.q_count - 1), 0.0)
+
+    @property
+    def q_variance(self) -> float:
+        if self.q_count == 0:
+            return max(self.immediate_reward_variance, self.mean_uncertainty, self.uncertainty, 0.0)
+        # Eq. (10) stores the empirical mean q_hat. Following Sec. 3.3,
+        # Var(q_hat) combines propagated Bellman uncertainty with empirical
+        # disagreement among sampled continuations for this edge.
+        return max(self.q_variance_mean + self.empirical_q_variance, 0.0)
 
     @property
     def mean_uncertainty(self) -> float:
@@ -168,12 +193,79 @@ class TreeNode:
             node = node.parent_node
 
     def backpropagate_value(self, value: float):
+        self.backpropagate_uncertainty_bellman(value=value)
+
+    def _normalized_child_priors(self) -> list[tuple['TreeNode', float]]:
+        if not self.child_node:
+            return []
+        raw_priors = [max(child.policy_prior, 0.0) for child in self.child_node]
+        total_prior = sum(raw_priors)
+        if total_prior <= 0:
+            uniform_prior = 1.0 / len(self.child_node)
+            return [(child, uniform_prior) for child in self.child_node]
+        return [(child, prior / total_prior) for child, prior in zip(self.child_node, raw_priors)]
+
+    def node_value_estimate(self) -> float:
+        child_priors = self._normalized_child_priors()
+        if not child_priors:
+            return self.q_value
+        return sum(prior * child.q_value for child, prior in child_priors)
+
+    def node_value_variance(self) -> float:
+        child_priors = self._normalized_child_priors()
+        if not child_priors:
+            return self.q_variance
+        value = sum(prior * child.q_value for child, prior in child_priors)
+        propagated = sum((prior ** 2) * child.q_variance for child, prior in child_priors)
+        disagreement = sum(prior * ((child.q_value - value) ** 2) for child, prior in child_priors)
+        return max(propagated + disagreement, 0.0)
+
+    def _update_edge_q(self, target: float, target_variance: float):
+        self.q_count += 1
+        delta = target - self.q_mean
+        self.q_mean += delta / self.q_count
+        delta2 = target - self.q_mean
+        self.q_m2 += delta * delta2
+        target_variance = max(target_variance, 0.0)
+        self.q_variance_mean += (target_variance - self.q_variance_mean) / self.q_count
+
+        # Keep legacy counters populated for existing diagnostics/config dumps.
+        self.value_count = self.q_count
+        self.value_sum = self.q_mean * self.q_count
+        self.value_square_sum = self.q_m2 + self.q_count * (self.q_mean ** 2)
+
+    def backpropagate_uncertainty_bellman(
+            self,
+            value: float,
+            eval_variance: Optional[float] = None,
+            gamma: float = 1.0,
+        ):
+        downstream_value = float(value)
+        # For deterministic EM rewards there is no stochastic judge variance
+        # after observation. During search, however, a terminal leaf can still
+        # be unreliable because the sampled final action is uncertain. Use that
+        # leaf action uncertainty as Var(V(s_T)) unless an explicit evaluator
+        # variance is provided.
+        downstream_variance = (
+            max(float(eval_variance), 0.0)
+            if eval_variance is not None
+            else max(self.immediate_reward_variance, self.mean_uncertainty, self.uncertainty, 0.0)
+        )
         node = self
-        while node is not None:
-            node.value_count += 1
-            node.value_sum += value
-            node.value_square_sum += value * value
-            node = node.parent_node
+        first_edge = True
+        while node is not None and not node.is_root:
+            immediate_variance = 0.0 if first_edge and eval_variance is None else node.immediate_reward_variance
+            target = node.immediate_reward + gamma * downstream_value
+            target_variance = immediate_variance + (gamma ** 2) * downstream_variance
+            node._update_edge_q(target, target_variance)
+
+            parent = node.parent_node
+            if parent is None:
+                break
+            downstream_value = parent.node_value_estimate()
+            downstream_variance = parent.node_value_variance()
+            node = parent
+            first_edge = False
 
     def get_path_from_root(self) -> List['TreeNode']:
         path = []
@@ -192,13 +284,13 @@ class TreeNode:
         if len(siblings) <= 1:
             return 0.0
 
-        weights = [1.0 / (sibling.value_variance + epsilon) for sibling in siblings]
+        weights = [1.0 / (sibling.q_variance + epsilon) for sibling in siblings]
         total_weight = sum(weights)
-        baseline = sum(weight * sibling.mean_value for weight, sibling in zip(weights, siblings)) / max(total_weight, epsilon)
-        sibling_mean = sum(sibling.mean_value for sibling in siblings) / len(siblings)
-        sibling_var = sum((sibling.mean_value - sibling_mean) ** 2 for sibling in siblings) / len(siblings)
-        confidence_gate = 1.0 / (1.0 + tau * self.value_variance)
-        return confidence_gate * (self.mean_value - baseline) / math.sqrt(sibling_var + epsilon)
+        baseline = sum(weight * sibling.q_value for weight, sibling in zip(weights, siblings)) / max(total_weight, epsilon)
+        sibling_mean = sum(sibling.q_value for sibling in siblings) / len(siblings)
+        sibling_var = sum((sibling.q_value - sibling_mean) ** 2 for sibling in siblings) / len(siblings)
+        confidence_gate = 1.0 / (1.0 + tau * self.q_variance)
+        return confidence_gate * (self.q_value - baseline) / math.sqrt(sibling_var + epsilon)
 
     def _umcts_score(
             self,
@@ -212,12 +304,20 @@ class TreeNode:
         sibling_visits = 0
         if node.parent_node is not None:
             sibling_visits = sum(child.visit_count for child in node.parent_node.child_node)
-        _ = ucb_c  # Kept for backward-compatible configs; UMCTS uses prior_coef as c_p.
-        exploitation = value_coef * node.mean_value
-        uncertainty_bonus = uncertainty_coef * math.sqrt(max(node.value_variance, 0.0))
-        prior_bonus = prior_coef * node.policy_prior * math.sqrt(sibling_visits + 1.0) / (1.0 + node.visit_count)
+        exploitation = value_coef * node.q_value
+        uncertainty_bonus = uncertainty_coef * math.sqrt(max(node.q_variance, 0.0))
+        prior_bonus = ucb_c * prior_coef * node.policy_prior * math.sqrt(max(float(sibling_visits), 0.0)) / (1.0 + node.visit_count)
         cost_penalty = cost_coef * node.interaction_cost
         return exploitation + uncertainty_bonus + prior_bonus - cost_penalty
+
+    def _selection_score(
+            self,
+            node: 'TreeNode',
+            value_coef: float,
+            confidence_tau: float,
+        ) -> float:
+        confidence_gate = 1.0 / (1.0 + confidence_tau * max(node.q_variance, 0.0))
+        return value_coef * node.q_value * confidence_gate
 
     def get_expand_node(
             self,
@@ -252,7 +352,17 @@ class TreeNode:
         assert len(result) == n, f"get_expand_node error, len(result)={len(result)} != n={n}"
         return result
 
-    def sample_leaf(self, n: int = 1, mode: str = 'random') -> List['TreeNode']:
+    def sample_leaf(
+            self,
+            n: int = 1,
+            mode: str = 'random',
+            ucb_c: float = 1.0,
+            uncertainty_coef: float = 1.0,
+            value_coef: float = 1.0,
+            prior_coef: float = 1.0,
+            cost_coef: float = 0.0,
+            confidence_tau: float = 1.0,
+        ) -> List['TreeNode']:
         """
         Sample n leaves, then prune the tree (drop the unselected nodes)
         """
@@ -267,9 +377,11 @@ class TreeNode:
             raise ValueError(f"root={self.node_uid} has no leaf candidates to sample")
 
         if mode == 'umcts':
+            # Selection favors high-value, low-variance leaves (confidence-weighted),
+            # the opposite of expansion's uncertainty-seeking PUCT score.
             candidate_nodes = sorted(
                 candidate_nodes,
-                key=lambda node: max(node.uncertainty, node.mean_uncertainty),
+                key=lambda node: self._selection_score(node, value_coef, confidence_tau),
                 reverse=True,
             )
         else:

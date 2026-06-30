@@ -54,7 +54,8 @@ if __name__ == '__main__':
 
     for data_source in data_sources:
 
-        dataset = datasets.load_dataset('/mnt/workspace/common/datas/FlashRAG_Dataset', data_source)
+        flashrag_dataset_path = os.environ.get('FLASHRAG_DATASET_PATH', 'RUC-NLPIR/FlashRAG_datasets')
+        dataset = datasets.load_dataset(flashrag_dataset_path, data_source)
 
         train_dataset = dataset['train']
 

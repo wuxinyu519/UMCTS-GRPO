@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name=umcts_retriever
-#SBATCH --partition=gpuA100x4
+#SBATCH --partition=gpuA40x4-preempt
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=16
@@ -9,14 +9,15 @@
 #SBATCH --account=bhnl-delta-gpu
 #SBATCH --time=48:00:00
 #SBATCH --constraint="projects"
-#SBATCH --output=/projects/bhnl/xwu20/UMCTS-GRPO/logs/umcts_retriever_%j.out
-#SBATCH --error=/projects/bhnl/xwu20/UMCTS-GRPO/logs/umcts_retriever_%j.err
+#SBATCH --output=logs/umcts_retriever_%j.out
+#SBATCH --error=logs/umcts_retriever_%j.err
 
 set -euo pipefail
 
-INDEX_FILE=${INDEX_FILE:-/projects/bhnl/xwu20/UMCTS-GRPO/data/wiki18/e5_Flat.index}
-CORPUS_FILE=${CORPUS_FILE:-/projects/bhnl/xwu20/UMCTS-GRPO/data/wiki18/wiki-18.jsonl}
-RETRIEVER_MODEL=${RETRIEVER_MODEL:-/projects/bhnl/xwu20/UMCTS-GRPO/data/models/e5-base-v2}
+REPO_DIR=${REPO_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}
+INDEX_FILE=${INDEX_FILE:-${REPO_DIR}/data/wiki18/e5_Flat.index}
+CORPUS_FILE=${CORPUS_FILE:-${REPO_DIR}/data/wiki18/wiki-18.jsonl}
+RETRIEVER_MODEL=${RETRIEVER_MODEL:-${REPO_DIR}/data/models/e5-base-v2}
 RETRIEVER_NAME=${RETRIEVER_NAME:-e5}
 RETRIEVER_TOPK=${RETRIEVER_TOPK:-3}
 RETRIEVER_PORT=${RETRIEVER_PORT:-8000}
@@ -25,10 +26,10 @@ RETRIEVER_ENV=${RETRIEVER_ENV:-retriever}
 module load miniforge3-python
 source "$(conda info --base)/etc/profile.d/conda.sh"
 
-cd /projects/bhnl/xwu20/UMCTS-GRPO
+cd "$REPO_DIR"
 mkdir -p logs run_info
 rm -f run_info/retriever_url.txt
-trap 'rm -f /projects/bhnl/xwu20/UMCTS-GRPO/run_info/retriever_url.txt' ERR
+trap 'rm -f "$REPO_DIR/run_info/retriever_url.txt"' ERR
 
 HOSTNAME_FQDN=$(hostname -f 2>/dev/null || hostname)
 RETRIEVER_URL="http://${HOSTNAME_FQDN}:${RETRIEVER_PORT}/retrieve"

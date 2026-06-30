@@ -15,6 +15,28 @@ import numpy as np
 
 from .tree_node import TreeNode, DEBUG, dprint
 
+# Set UMCTS_DUMP_TREES to a file path to dump per-tree rollout data for case study analysis.
+# Leave unset (or empty) during normal training; only enable on inference/analysis runs.
+DUMP_TREES_PATH: str = os.environ.get('UMCTS_DUMP_TREES', '')
+
+# Set UMCTS_DUMP_METRICS to a file path to dump compact per-node numbers every step.
+# Enables offline recomputation of any metric without re-running training.
+DUMP_METRICS_PATH: str = os.environ.get('UMCTS_DUMP_METRICS', '')
+
+
+def _spearman_r(x: list, y: list) -> float:
+    """Spearman rank correlation without scipy dependency."""
+    n = len(x)
+    if n < 3:
+        return 0.0
+    x_arr = np.array(x, dtype=float)
+    y_arr = np.array(y, dtype=float)
+    rx = np.argsort(np.argsort(x_arr)).astype(float)
+    ry = np.argsort(np.argsort(y_arr)).astype(float)
+    d2 = float(np.sum((rx - ry) ** 2))
+    denom = n * (n * n - 1)
+    return 0.0 if denom == 0 else float(1.0 - 6.0 * d2 / denom)
+
 
 @dataclass
 class GenerationTreeSearchConfig:
@@ -45,6 +67,7 @@ class GenerationTreeSearchConfig:
     umcts_confidence_tau: float = 1.0
     umcts_inter_advantage_weight: float = 1.0
     umcts_local_advantage_weight: float = 1.0
+    umcts_gamma: float = 1.0
 
 class LLMGenerationTreeSearchManager:
     def __init__(
@@ -337,7 +360,10 @@ class LLMGenerationTreeSearchManager:
             score_value = float(score.detach().cpu().item()) if torch.is_tensor(score) else float(score)
             dprint(f'node:{node.node_uid}, original_score={score_value}')
             node.set_leaf_original_score(score_value)
-            node.backpropagate_value(score_value)
+            node.backpropagate_uncertainty_bellman(
+                value=score_value,
+                gamma=self.config.umcts_gamma,
+            )
             node.value_backed_up = True
 
     def _evaluate_current_leaf_values(self, gen_batch: DataProto):
@@ -356,11 +382,12 @@ class LLMGenerationTreeSearchManager:
         return torch.mean(log_probs, dim=1)
 
     def _log_prob_to_uncertainty(self, log_prob: torch.Tensor) -> float:
-        # vLLM returns log p(sampled token). Lower confidence means higher uncertainty.
+        # vLLM returns log p(sampled token), not the full vocabulary distribution.
+        # Use per-token mean surprisal, -E[log p_t], as a sampled approximation
+        # of token-level entropy.
         if not torch.isfinite(log_prob):
             return 1.0
-        confidence = torch.exp(log_prob.detach().float()).clamp(0.0, 1.0)
-        return float((1.0 - confidence).item())
+        return float((-log_prob.detach().float()).clamp(min=0.0, max=10.0).item())
 
     def _parse_action_for_clustering(self, prediction: str) -> Tuple[str, str, str]:
         actions, contents = self.postprocess_predictions([prediction])
@@ -804,10 +831,159 @@ class LLMGenerationTreeSearchManager:
         # for i in range(len(tmp_node_list)):
         #     tmp_node_list[i].set_leaf_original_score(original_scores[i])
 
+    def _compute_uncertainty_metrics(self, final_node_list: List[TreeNode]) -> dict:
+        """Compute per-step tree diagnostics without changing training behavior."""
+        tau = self.config.umcts_confidence_tau
+
+        calib_qvar, calib_std = [], []
+        gate_list, neg_err_list = [], []
+        depth_qvar: dict = defaultdict(list)
+        all_qvar = []
+        oracle_rewards, leaf_means, leaf_stds = [], [], []
+
+        for root in self.root_list:
+            all_nodes = root.get_subtree_nodes()
+            leaf_nodes = [n for n in all_nodes if n.is_leaf]
+            if not leaf_nodes:
+                continue
+
+            leaf_rewards = [float(n.original_score) for n in leaf_nodes]
+            oracle_rewards.append(max(leaf_rewards))
+            leaf_means.append(float(np.mean(leaf_rewards)))
+            leaf_stds.append(float(np.std(leaf_rewards)))
+
+            for node in all_nodes:
+                qv = float(node.q_variance)
+                if not node.is_root:
+                    depth_qvar[node.depth].append(qv)
+                    all_qvar.append(qv)
+
+                if not node.is_leaf:
+                    desc_leaves = [n for n in node.get_subtree_nodes() if n.is_leaf]
+                    if len(desc_leaves) >= 2:
+                        desc_rewards = [float(n.original_score) for n in desc_leaves]
+                        calib_qvar.append(qv)
+                        calib_std.append(float(np.std(desc_rewards)))
+                        gate = 1.0 / (1.0 + tau * qv)
+                        gate_list.append(gate)
+                        neg_err_list.append(-abs(float(node.q_value) - float(np.mean(desc_rewards))))
+
+        metrics: dict = {}
+        if oracle_rewards:
+            metrics['tree/leaf_reward_max'] = float(np.mean(oracle_rewards))
+            metrics['tree/leaf_reward_mean'] = float(np.mean(leaf_means))
+            metrics['tree/leaf_reward_std'] = float(np.mean(leaf_stds))
+        if all_qvar:
+            metrics['tree/uncertainty/mean_qvar'] = float(np.mean(all_qvar))
+        for depth, vals in depth_qvar.items():
+            if 1 <= depth <= 5:
+                metrics[f'tree/uncertainty/qvar_depth_{depth}'] = float(np.mean(vals))
+        metrics['tree/uncertainty/calibration_r'] = _spearman_r(calib_qvar, calib_std)
+        metrics['tree/uncertainty/confidence_gate_r'] = _spearman_r(gate_list, neg_err_list)
+
+        selected_rewards = [float(n.original_score) for n in final_node_list if n.is_leaf]
+        if selected_rewards and leaf_means:
+            metrics['tree/selected_leaf_reward'] = float(np.mean(selected_rewards))
+            metrics['tree/selection_gain'] = float(np.mean(selected_rewards)) - float(np.mean(leaf_means))
+
+        return metrics
+
+    def _dump_compact_metrics(self, final_node_list: List[TreeNode], global_step: int = 0) -> None:
+        """Dump compact per-node numbers to JSONL for offline metric recomputation."""
+        import json
+        selected_uids = {node.node_uid for node in final_node_list}
+        trees = []
+        for root in self.root_list:
+            nodes = []
+            for node in root.get_subtree_nodes():
+                entry = {
+                    'uid': node.node_uid,
+                    'par': node.parent_node.node_uid if node.parent_node else None,
+                    'd': node.depth,
+                    'leaf': node.is_leaf,
+                    'sel': node.node_uid in selected_uids,
+                    'qv': round(float(node.q_value), 5),
+                    'qvar': round(float(node.q_variance), 5),
+                    'unc': round(float(node.uncertainty), 5),
+                    'vis': node.visit_count,
+                }
+                if node.is_leaf:
+                    entry['r'] = round(float(node.original_score), 5)
+                nodes.append(entry)
+            trees.append({'tree_uid': root.tree_uid, 'nodes': nodes})
+        record = {'step': global_step, 'trees': trees}
+        try:
+            with open(DUMP_METRICS_PATH, 'a') as f:
+                f.write(json.dumps(record, ensure_ascii=False) + '\n')
+        except Exception as e:
+            print(f'[DUMP_METRICS] write failed: {e}')
+
+    def _dump_trees(
+            self,
+            final_node_list: List[TreeNode],
+            gen_batch: DataProto,
+            global_step: int = 0,
+        ) -> None:
+        """Dump per-tree rollout data to JSONL when UMCTS_DUMP_TREES is set."""
+        import json
+
+        selected_uids = {node.node_uid for node in final_node_list}
+        pad_id = self.tokenizer.pad_token_id
+
+        for root in self.root_list:
+            src = root.source_index
+            prompt_ids = root.prompts.cpu()
+            valid_prompt = prompt_ids[prompt_ids != pad_id]
+            question_text = self.tokenizer.decode(valid_prompt, skip_special_tokens=True)[-400:]
+
+            non_tensor = gen_batch.non_tensor_batch
+            data_source = str(non_tensor.get('data_source', ['unknown'] * (src + 1))[src])
+            uid = str(non_tensor.get('uid', [''] * (src + 1))[src])
+
+            nodes = []
+            for node in root.get_subtree_nodes():
+                if node.responses is not None:
+                    resp_ids = node.responses.cpu()
+                    valid_len = int((resp_ids != pad_id).sum().item())
+                    resp_text = self.tokenizer.decode(resp_ids[:valid_len], skip_special_tokens=True)[:600]
+                else:
+                    resp_text = ''
+
+                nodes.append({
+                    'node_uid': node.node_uid,
+                    'parent_uid': node.parent_node.node_uid if node.parent_node else None,
+                    'depth': node.depth,
+                    'is_leaf': node.is_leaf,
+                    'is_selected': node.node_uid in selected_uids,
+                    'q_value': round(float(node.q_value), 4),
+                    'q_variance': round(float(node.q_variance), 4),
+                    'uncertainty': round(float(node.uncertainty), 4),
+                    'policy_prior': round(float(node.policy_prior), 4),
+                    'visit_count': node.visit_count,
+                    'reward': round(float(node.original_score), 4) if node.is_leaf else None,
+                    'response': resp_text,
+                })
+
+            record = {
+                'global_step': global_step,
+                'tree_uid': root.tree_uid,
+                'uid': uid,
+                'data_source': data_source,
+                'question': question_text,
+                'nodes': nodes,
+            }
+
+            try:
+                with open(DUMP_TREES_PATH, 'a') as f:
+                    f.write(json.dumps(record, ensure_ascii=False) + '\n')
+            except Exception as e:
+                print(f'[DUMP_TREES] write failed: {e}')
+
     def run_llm_loop_tree_search(
             self, 
             gen_batch, 
             initial_input_ids: torch.Tensor,
+            global_step: int = 0,
         ) -> Tuple[Dict, Dict]:
         """Run main LLM generation loop."""
 
@@ -899,7 +1075,16 @@ class LLMGenerationTreeSearchManager:
         for root in self.root_list:
             root.check_all_nodes_child()
             # sample trajectory
-            final_node_list_tmp = root.sample_leaf(self.config.k, mode=self.config.expand_mode)
+            final_node_list_tmp = root.sample_leaf(
+                    self.config.k,
+                    mode=self.config.expand_mode,
+                    ucb_c=self.config.umcts_ucb_c,
+                    uncertainty_coef=self.config.umcts_uncertainty_coef,
+                    value_coef=self.config.umcts_value_coef,
+                    prior_coef=self.config.umcts_prior_coef,
+                    cost_coef=self.config.umcts_cost_coef,
+                    confidence_tau=self.config.umcts_confidence_tau,
+                )
             final_node_list.extend(final_node_list_tmp)
 
         for node in final_node_list:
@@ -956,10 +1141,17 @@ class LLMGenerationTreeSearchManager:
         meta_info['valid_search_stats'] = valid_search_stats
         meta_info['umcts_inter_advantage_weight'] = self.config.umcts_inter_advantage_weight
         meta_info['umcts_local_advantage_weight'] = self.config.umcts_local_advantage_weight
+        meta_info['tree_metrics'] = self._compute_uncertainty_metrics(final_node_list)
 
         final_output.meta_info = meta_info
 
         final_output.non_tensor_batch['tree_uid'] = np.array(final_tree_uid_list, dtype=object)
+
+        if DUMP_METRICS_PATH:
+            self._dump_compact_metrics(final_node_list, global_step=global_step)
+
+        if DUMP_TREES_PATH:
+            self._dump_trees(final_node_list, gen_batch, global_step=global_step)
 
         # Delete the tree
         for root in self.root_list:

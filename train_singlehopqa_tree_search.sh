@@ -1,5 +1,6 @@
 export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
 export DATA_DIR=''
+export UMCTS_DUMP_METRICS=${UMCTS_DUMP_METRICS:-${REPO_DIR:-$(pwd)}/tree_metrics/$(basename "$0" .sh)_$$.jsonl}
 
 export WG_BACKEND="ray"
 export VLLM_ATTENTION_BACKEND=XFORMERS

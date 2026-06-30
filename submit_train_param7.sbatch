@@ -1,19 +1,16 @@
 #!/bin/bash
 #SBATCH --job-name=umcts_train_p7
-#SBATCH --partition=gpuA100x4
-#SBATCH --nodes=4
+#SBATCH --partition=gpuA100x8
+#SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
-#SBATCH --cpus-per-task=16
-#SBATCH --gpus-per-node=2
+#SBATCH --cpus-per-task=64
+#SBATCH --gpus-per-node=8
+#SBATCH --mem=0
 #SBATCH --account=bhnl-delta-gpu
 #SBATCH --time=48:00:00
 #SBATCH --constraint="projects"
-#SBATCH --output=/projects/bhnl/xwu20/UMCTS-GRPO/logs/umcts_train_p7_%j.out
-#SBATCH --error=/projects/bhnl/xwu20/UMCTS-GRPO/logs/umcts_train_p7_%j.err
-
-# param7: confidence_tau=0.1 (weak confidence gate)
-# Low tau means the gate is nearly open: local step advantages are used at full
-# strength regardless of the node's value variance.
+#SBATCH --output=logs/umcts_train_p7_%j.out
+#SBATCH --error=logs/umcts_train_p7_%j.err
 
 set -euo pipefail
 
@@ -28,9 +25,10 @@ export UMCTS_UNCERTAINTY_COEF=${UMCTS_UNCERTAINTY_COEF:-1.0}
 export UMCTS_LOCAL_ADVANTAGE_WEIGHT=${UMCTS_LOCAL_ADVANTAGE_WEIGHT:-1.0}
 export UMCTS_CLUSTER_THRESHOLD=${UMCTS_CLUSTER_THRESHOLD:-0.85}
 export UMCTS_CONFIDENCE_TAU=${UMCTS_CONFIDENCE_TAU:-0.1}
-export N_NODES=${N_NODES:-4}
-export N_GPUS_PER_NODE=${N_GPUS_PER_NODE:-2}
-export N_CPUS_PER_NODE=${N_CPUS_PER_NODE:-16}
+export N_NODES=${N_NODES:-1}
+export N_GPUS_PER_NODE=${N_GPUS_PER_NODE:-8}
+export N_CPUS_PER_NODE=${N_CPUS_PER_NODE:-64}
 
-cd /projects/bhnl/xwu20/UMCTS-GRPO
+REPO_DIR=${REPO_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}
+cd "$REPO_DIR"
 exec bash submit_train_8gpu.sbatch

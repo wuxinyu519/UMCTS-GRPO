@@ -1,29 +1,41 @@
 #!/bin/bash
 #SBATCH --job-name=umcts_train
-#SBATCH --partition=gpuA100x4
-#SBATCH --nodes=4
+#SBATCH --partition=gpuA100x8
+#SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
-#SBATCH --cpus-per-task=16
-#SBATCH --gpus-per-node=2
+#SBATCH --cpus-per-task=64
+#SBATCH --gpus-per-node=8
+#SBATCH --mem=0
 #SBATCH --account=bhnl-delta-gpu
 #SBATCH --time=48:00:00
 #SBATCH --constraint="projects"
-#SBATCH --output=/projects/bhnl/xwu20/UMCTS-GRPO/logs/umcts_train_%j.out
-#SBATCH --error=/projects/bhnl/xwu20/UMCTS-GRPO/logs/umcts_train_%j.err
+#SBATCH --output=logs/umcts_train_%j.out
+#SBATCH --error=logs/umcts_train_%j.err
 
 set -euo pipefail
 
-DATA_DIR=${DATA_DIR:-/projects/bhnl/xwu20/UMCTS-GRPO/data/singlehopqa}
-BASE_MODEL=${BASE_MODEL:-/projects/bhnl/xwu20/UMCTS-GRPO/data/models/Qwen2.5-1.5B-Instruct}
-UMCTS_EMBEDDING_MODEL=${UMCTS_EMBEDDING_MODEL:-/projects/bhnl/xwu20/UMCTS-GRPO/data/models/e5-base-v2}
+REPO_DIR=${REPO_DIR:-/projects/bhnl/xwu20/UMCTS-GRPO}
+DATA_DIR=${DATA_DIR:-${REPO_DIR}/data/singlehopqa}
+BASE_MODEL=${BASE_MODEL:-${REPO_DIR}/data/models/Qwen2.5-1.5B}
+UMCTS_EMBEDDING_MODEL=${UMCTS_EMBEDDING_MODEL:-${REPO_DIR}/data/models/e5-base-v2}
 TRAIN_ENV=${TRAIN_ENV:-treegrpo}
 TRAIN_ENV_PREFIX=${TRAIN_ENV_PREFIX:-/u/xwu20/.conda/envs/${TRAIN_ENV}}
 PYTHON_BIN=${PYTHON_BIN:-${TRAIN_ENV_PREFIX}/bin/python}
 RAY_BIN=${RAY_BIN:-${TRAIN_ENV_PREFIX}/bin/ray}
 TRAIN_SCRIPT=${TRAIN_SCRIPT:-train_singlehopqa_umcts.sh}
-RETRIEVER_WAIT_SECONDS=${RETRIEVER_WAIT_SECONDS:-7200}
-N_NODES=${N_NODES:-${SLURM_JOB_NUM_NODES:-1}}
-N_GPUS_PER_NODE=${N_GPUS_PER_NODE:-${SLURM_GPUS_ON_NODE:-8}}
+RETRIEVER_ENV=${RETRIEVER_ENV:-retriever}
+RETRIEVER_ENV_PREFIX=${RETRIEVER_ENV_PREFIX:-/u/xwu20/.conda/envs/${RETRIEVER_ENV}}
+RETRIEVER_PYTHON_BIN=${RETRIEVER_PYTHON_BIN:-${RETRIEVER_ENV_PREFIX}/bin/python}
+RETRIEVER_INDEX_FILE=${RETRIEVER_INDEX_FILE:-${REPO_DIR}/data/wiki18/e5_Flat.index}
+RETRIEVER_CORPUS_FILE=${RETRIEVER_CORPUS_FILE:-${REPO_DIR}/data/wiki18/wiki-18.jsonl}
+RETRIEVER_MODEL=${RETRIEVER_MODEL:-${REPO_DIR}/data/models/e5-base-v2}
+RETRIEVER_NAME=${RETRIEVER_NAME:-e5}
+RETRIEVER_TOPK=${RETRIEVER_TOPK:-3}
+RETRIEVER_PORT=${RETRIEVER_PORT:-8000}
+RETRIEVER_CUDA_VISIBLE_DEVICES=${RETRIEVER_CUDA_VISIBLE_DEVICES:-0,1}
+TRAIN_CUDA_VISIBLE_DEVICES=${TRAIN_CUDA_VISIBLE_DEVICES:-2,3,4,5,6,7}
+N_NODES=1
+N_GPUS_PER_NODE=${N_GPUS_PER_NODE:-6}
 N_CPUS_PER_NODE=${N_CPUS_PER_NODE:-${SLURM_CPUS_PER_TASK:-8}}
 
 unset ${!CONDA_@} _CE_CONDA _CE_M
@@ -32,30 +44,71 @@ export RAY_enable_open_telemetry=0
 export RAY_USAGE_STATS_ENABLED=0
 export RAY_raylet_start_wait_time_s=${RAY_raylet_start_wait_time_s:-120}
 export SWANLAB_MODE=${SWANLAB_MODE:-local}
-export SWANLAB_LOG_DIR=${SWANLAB_LOG_DIR:-/projects/bhnl/xwu20/UMCTS-GRPO/swanlab_log}
+export SWANLAB_LOG_DIR=${SWANLAB_LOG_DIR:-${REPO_DIR}/swanlab_log}
+export UMCTS_DUMP_METRICS=${UMCTS_DUMP_METRICS:-${REPO_DIR}/tree_metrics/${SLURM_JOB_NAME}_${SLURM_JOB_ID}.jsonl}
+export GPU_MEMORY_UTILIZATION=${GPU_MEMORY_UTILIZATION:-0.55}
 
-cd /projects/bhnl/xwu20/UMCTS-GRPO
-mkdir -p logs
+cd "$REPO_DIR"
+mkdir -p logs run_info tree_metrics
+
+cleanup() {
+    "$RAY_BIN" stop --force >/dev/null 2>&1 || true
+    if [[ -n "${RETRIEVER_PID:-}" ]]; then
+        kill "$RETRIEVER_PID" >/dev/null 2>&1 || true
+        wait "$RETRIEVER_PID" >/dev/null 2>&1 || true
+    fi
+}
+trap cleanup EXIT
 
 if [[ -z "${RETRIEVER_URL:-}" ]]; then
-    echo "Waiting up to ${RETRIEVER_WAIT_SECONDS}s for run_info/retriever_url.txt ..."
-    waited=0
-    while [[ ! -s run_info/retriever_url.txt && "$waited" -lt "$RETRIEVER_WAIT_SECONDS" ]]; do
-        sleep 10
-        waited=$((waited + 10))
+    RETRIEVER_URL="http://127.0.0.1:${RETRIEVER_PORT}/retrieve"
+    echo "$RETRIEVER_URL" > run_info/retriever_url.txt
+
+    echo "Starting retriever on GPUs ${RETRIEVER_CUDA_VISIBLE_DEVICES}"
+    PYTHONUNBUFFERED=1 CUDA_VISIBLE_DEVICES="$RETRIEVER_CUDA_VISIBLE_DEVICES" "$RETRIEVER_PYTHON_BIN" search_r1/search/retrieval_server.py \
+        --index_path "$RETRIEVER_INDEX_FILE" \
+        --corpus_path "$RETRIEVER_CORPUS_FILE" \
+        --topk "$RETRIEVER_TOPK" \
+        --retriever_name "$RETRIEVER_NAME" \
+        --retriever_model "$RETRIEVER_MODEL" \
+        --faiss_gpu \
+        > "logs/umcts_retriever_${SLURM_JOB_ID}.log" 2>&1 &
+    RETRIEVER_PID=$!
+
+    echo "Waiting for retriever at ${RETRIEVER_URL} ..."
+    retriever_ready=0
+    for attempt in $(seq 1 ${RETRIEVER_WAIT_ATTEMPTS:-360}); do
+        if ! kill -0 "$RETRIEVER_PID" >/dev/null 2>&1; then
+            echo "ERROR: Retriever process exited before becoming ready."
+            tail -100 "logs/umcts_retriever_${SLURM_JOB_ID}.log" || true
+            exit 1
+        fi
+        if curl -fsS -X POST "$RETRIEVER_URL" \
+            -H "Content-Type: application/json" \
+            -d '{"queries":["test query"],"topk":1,"return_scores":true}' >/dev/null 2>&1; then
+            retriever_ready=1
+            echo "Retriever is ready."
+            break
+        fi
+        sleep 5
     done
-    if [[ ! -s run_info/retriever_url.txt ]]; then
-        echo "ERROR: Retriever URL was not created within ${RETRIEVER_WAIT_SECONDS}s."
+    if [[ "$retriever_ready" -ne 1 ]]; then
+        echo "ERROR: Retriever did not become ready at ${RETRIEVER_URL}."
+        tail -100 "logs/umcts_retriever_${SLURM_JOB_ID}.log" || true
         exit 1
     fi
-    RETRIEVER_URL=$(cat run_info/retriever_url.txt)
+else
+    echo "$RETRIEVER_URL" > run_info/retriever_url.txt
 fi
 export DATA_DIR BASE_MODEL UMCTS_EMBEDDING_MODEL RETRIEVER_URL N_NODES N_GPUS_PER_NODE N_CPUS_PER_NODE PYTHON_BIN
+export CUDA_VISIBLE_DEVICES="$TRAIN_CUDA_VISIBLE_DEVICES"
 
 echo "=== Training Job Info ==="
 echo "Job ID: ${SLURM_JOB_ID}"
 echo "Node: ${SLURMD_NODENAME}"
 echo "Retriever URL: ${RETRIEVER_URL}"
+echo "Retriever GPUs: ${RETRIEVER_CUDA_VISIBLE_DEVICES}"
+echo "Training GPUs: ${CUDA_VISIBLE_DEVICES}"
 echo "Train script: ${TRAIN_SCRIPT}"
 echo "Nodes: ${N_NODES}"
 echo "GPUs per node: ${N_GPUS_PER_NODE}"
@@ -66,51 +119,25 @@ nvidia-smi
 
 "$RAY_BIN" stop --force || true
 
-if [[ "$N_NODES" -gt 1 ]]; then
-    mapfile -t RAY_NODES < <(scontrol show hostnames "$SLURM_JOB_NODELIST")
-    HEAD_NODE=${RAY_NODES[0]}
-    HEAD_IP=$(srun --nodes=1 --ntasks=1 -w "$HEAD_NODE" hostname -I | awk '{print $1}')
-    RAY_PORT=${RAY_PORT:-6379}
-    export RAY_ADDRESS="${HEAD_IP}:${RAY_PORT}"
-
-    echo "Ray head node: ${HEAD_NODE}"
-    echo "Ray head IP: ${HEAD_IP}"
-    echo "Ray address: ${RAY_ADDRESS}"
-
-    srun --nodes=1 --ntasks=1 -w "$HEAD_NODE" bash -lc "
-        unset \${!CONDA_@} _CE_CONDA _CE_M
-        export PATH=\"${TRAIN_ENV_PREFIX}/bin:\${PATH}\"
-        export RAY_enable_open_telemetry=0
-        export RAY_USAGE_STATS_ENABLED=0
-        export RAY_raylet_start_wait_time_s=${RAY_raylet_start_wait_time_s}
-        export SWANLAB_MODE=${SWANLAB_MODE}
-        export SWANLAB_LOG_DIR=${SWANLAB_LOG_DIR}
-        cd /projects/bhnl/xwu20/UMCTS-GRPO
-        \"${RAY_BIN}\" stop --force || true
-        \"${RAY_BIN}\" start --head --node-ip-address=${HEAD_IP} --port=${RAY_PORT} --include-dashboard=false --num-gpus=${N_GPUS_PER_NODE} --num-cpus=${N_CPUS_PER_NODE} --block
-    " &
-    RAY_HEAD_PID=$!
-    sleep 20
-
-    for WORKER_NODE in "${RAY_NODES[@]:1}"; do
-        echo "Starting Ray worker on ${WORKER_NODE}"
-        srun --nodes=1 --ntasks=1 -w "$WORKER_NODE" bash -lc "
-            unset \${!CONDA_@} _CE_CONDA _CE_M
-            export PATH=\"${TRAIN_ENV_PREFIX}/bin:\${PATH}\"
-            export RAY_enable_open_telemetry=0
-            export RAY_USAGE_STATS_ENABLED=0
-            export RAY_raylet_start_wait_time_s=${RAY_raylet_start_wait_time_s}
-            export SWANLAB_MODE=${SWANLAB_MODE}
-            export SWANLAB_LOG_DIR=${SWANLAB_LOG_DIR}
-            cd /projects/bhnl/xwu20/UMCTS-GRPO
-            \"${RAY_BIN}\" stop --force || true
-            \"${RAY_BIN}\" start --address=${HEAD_IP}:${RAY_PORT} --num-gpus=${N_GPUS_PER_NODE} --num-cpus=${N_CPUS_PER_NODE} --block
-        " &
-    done
-else
-    RAY_PORT=${RAY_PORT:-6379}
-    export RAY_ADDRESS="127.0.0.1:${RAY_PORT}"
-    "$RAY_BIN" start --head --node-ip-address=127.0.0.1 --port="$RAY_PORT" --include-dashboard=false --num-gpus="$N_GPUS_PER_NODE" --num-cpus="$N_CPUS_PER_NODE"
+RAY_PORT=${RAY_PORT:-6379}
+RAY_DASHBOARD_PORT=${RAY_DASHBOARD_PORT:-8265}
+RAY_INCLUDE_DASHBOARD=${RAY_INCLUDE_DASHBOARD:-true}
+export RAY_ADDRESS="127.0.0.1:${RAY_PORT}"
+ray_start_args=(
+    --head
+    --node-ip-address=127.0.0.1
+    --port="$RAY_PORT"
+    --include-dashboard="$RAY_INCLUDE_DASHBOARD"
+    --num-gpus="$N_GPUS_PER_NODE"
+    --num-cpus="$N_CPUS_PER_NODE"
+)
+if [[ "$RAY_INCLUDE_DASHBOARD" == "true" ]]; then
+    ray_start_args+=(--dashboard-host=0.0.0.0 --dashboard-port="$RAY_DASHBOARD_PORT")
+fi
+"$RAY_BIN" start "${ray_start_args[@]}"
+echo "Ray dashboard enabled: ${RAY_INCLUDE_DASHBOARD}"
+if [[ "$RAY_INCLUDE_DASHBOARD" == "true" ]]; then
+    echo "Ray dashboard URL: http://${SLURMD_NODENAME:-127.0.0.1}:${RAY_DASHBOARD_PORT}"
 fi
 
 echo "Waiting for Ray core at ${RAY_ADDRESS} ..."
@@ -141,5 +168,3 @@ if [[ "$ray_ready" -ne 1 ]]; then
 fi
 
 bash "$TRAIN_SCRIPT"
-
-"$RAY_BIN" stop --force || true

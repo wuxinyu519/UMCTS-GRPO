@@ -1,5 +1,6 @@
 export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0,1,2,3,4,5,6,7}
 export DATA_DIR=${DATA_DIR:-''}
+export UMCTS_DUMP_METRICS=${UMCTS_DUMP_METRICS:-${REPO_DIR:-$(pwd)}/tree_metrics/$(basename "$0" .sh)_$$.jsonl}
 
 export WG_BACKEND="ray"
 export VLLM_ATTENTION_BACKEND=XFORMERS
@@ -17,8 +18,9 @@ total_gpus=$((N_NODES * n_gpus_per_node))
 train_batch_size=$((total_gpus * 64))
 val_batch_size=$((total_gpus * 16))
 actor_ppo_mini_batch_size=$((total_gpus * 8))
-actor_ppo_micro_batch_size=$((n_gpus_per_node * 4))
-log_prob_micro_batch_size=$((n_gpus_per_node * 4))
+actor_ppo_micro_batch_size=${ACTOR_PPO_MICRO_BATCH_SIZE:-$((n_gpus_per_node * 4))}
+log_prob_micro_batch_size=${LOG_PROB_MICRO_BATCH_SIZE:-$((n_gpus_per_node * 4))}
+trainer_save_freq=${TRAINER_SAVE_FREQ:-60}
 
 tree_search_m=${tree_search_m:-2}
 tree_search_n=${tree_search_n:-2}
@@ -36,6 +38,7 @@ UMCTS_CANDIDATE_K=${UMCTS_CANDIDATE_K:-4}
 UMCTS_CONFIDENCE_TAU=${UMCTS_CONFIDENCE_TAU:-1.0}
 UMCTS_INTER_ADVANTAGE_WEIGHT=${UMCTS_INTER_ADVANTAGE_WEIGHT:-1.0}
 UMCTS_LOCAL_ADVANTAGE_WEIGHT=${UMCTS_LOCAL_ADVANTAGE_WEIGHT:-1.0}
+UMCTS_GAMMA=${UMCTS_GAMMA:-1.0}
 UMCTS_EMBEDDING_MODEL=${UMCTS_EMBEDDING_MODEL:-}
 if [[ "$UMCTS_CLUSTER_MODE" == "embedding" && -z "$UMCTS_EMBEDDING_MODEL" ]]; then
     echo "ERROR: UMCTS_CLUSTER_MODE=embedding requires UMCTS_EMBEDDING_MODEL=/path/to/local/embedding-model"
@@ -82,6 +85,7 @@ mkdir -p "$RESULT_DIR/logs" "$RESULT_DIR/config" "$RESULT_DIR/checkpoints" verl_
     echo "umcts_confidence_tau=$UMCTS_CONFIDENCE_TAU"
     echo "umcts_inter_advantage_weight=$UMCTS_INTER_ADVANTAGE_WEIGHT"
     echo "umcts_local_advantage_weight=$UMCTS_LOCAL_ADVANTAGE_WEIGHT"
+    echo "umcts_gamma=$UMCTS_GAMMA"
     echo "result_dir=$RESULT_DIR"
 } > "$RESULT_DIR/config/run.env"
 cp "$0" "$RESULT_DIR/config/train_script.sh"
@@ -146,7 +150,8 @@ fi
     actor_rollout_ref.rollout.umcts_confidence_tau=$UMCTS_CONFIDENCE_TAU \
     actor_rollout_ref.rollout.umcts_inter_advantage_weight=$UMCTS_INTER_ADVANTAGE_WEIGHT \
     actor_rollout_ref.rollout.umcts_local_advantage_weight=$UMCTS_LOCAL_ADVANTAGE_WEIGHT \
-    actor_rollout_ref.rollout.gpu_memory_utilization=0.6 \
+    actor_rollout_ref.rollout.umcts_gamma=$UMCTS_GAMMA \
+    actor_rollout_ref.rollout.gpu_memory_utilization=${GPU_MEMORY_UTILIZATION:-0.6} \
     +actor_rollout_ref.rollout.disable_log_stats=true \
     +actor_rollout_ref.rollout.enable_chunked_prefill=true \
     actor_rollout_ref.ref.log_prob_micro_batch_size=$log_prob_micro_batch_size \
@@ -164,7 +169,7 @@ fi
     trainer.default_hdfs_dir=null \
     trainer.n_gpus_per_node=$n_gpus_per_node \
     trainer.nnodes=$N_NODES \
-    trainer.save_freq=60 \
+    trainer.save_freq=$trainer_save_freq \
     trainer.test_freq=60 \
     trainer.project_name=$WAND_PROJECT \
     trainer.experiment_name=$RUN_NAME \

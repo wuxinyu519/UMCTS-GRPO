@@ -111,6 +111,19 @@ actor_rollout_ref:
     ts_k_s2: 1
     reward_mode: tree
     expand_mode: random
+    umcts_ucb_c: 1.0
+    umcts_uncertainty_coef: 1.0
+    umcts_value_coef: 1.0
+    umcts_prior_coef: 1.0
+    umcts_cost_coef: 0.0
+    umcts_candidate_k: 4
+    umcts_cluster_mode: embedding
+    umcts_cluster_threshold: 0.85
+    umcts_embedding_model_path: ''
+    umcts_confidence_tau: 1.0
+    umcts_inter_advantage_weight: 1.0
+    umcts_local_advantage_weight: 1.0
+    umcts_gamma: 1.0
 
 critic:
   strategy: fsdp

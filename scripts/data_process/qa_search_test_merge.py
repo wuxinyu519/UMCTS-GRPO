@@ -54,7 +54,8 @@ if __name__ == '__main__':
     for data_source in data_sources:
 
         if data_source != 'strategyqa':
-            dataset = datasets.load_dataset('/mnt/workspace/common/datas/FlashRAG_Dataset', data_source)
+            flashrag_dataset_path = os.environ.get('FLASHRAG_DATASET_PATH', 'RUC-NLPIR/FlashRAG_datasets')
+            dataset = datasets.load_dataset(flashrag_dataset_path, data_source)
         else:
             dataset = datasets.load_dataset('json', data_files="/home/peterjin/mnt/data/strategyqa/test_correct.jsonl")
 

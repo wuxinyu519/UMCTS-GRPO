@@ -240,6 +240,28 @@ def compute_advantage(data: DataProto, adv_estimator, gamma=1.0, lam=1.0, num_re
         
         data.batch['advantages'] = inter_tree_advantages + inner_tree_advantages
         data.batch['returns'] = inter_tree_returns + inner_tree_returns
+    elif adv_estimator == 'umcts':
+        token_level_rewards = data.batch['token_level_rewards']
+        index = data.non_tensor_batch['uid']
+        responses = data.batch['responses']
+        response_length = responses.size(-1)
+        attention_mask = data.batch['attention_mask']
+        response_mask = attention_mask[:, -response_length:]
+        inter_tree_advantages, inter_tree_returns = core_algos.compute_grpo_outcome_advantage(
+            token_level_rewards=token_level_rewards,
+            eos_mask=response_mask,
+            index=index,
+        )
+        if 'umcts_local_advantages' not in data.batch:
+            raise ValueError("adv_estimator=umcts requires umcts_local_advantages from tree-search rollout")
+        inter_weight = data.meta_info.get('umcts_inter_advantage_weight', 1.0)
+        local_weight = data.meta_info.get('umcts_local_advantage_weight', 1.0)
+        local_advantages = data.batch['umcts_local_advantages'] * response_mask
+        data.batch['inter_tree_advantages'] = inter_tree_advantages
+        data.batch['inter_tree_returns'] = inter_tree_returns
+        data.batch['umcts_local_advantages'] = local_advantages
+        data.batch['advantages'] = inter_weight * inter_tree_advantages + local_weight * local_advantages
+        data.batch['returns'] = inter_weight * inter_tree_returns + local_weight * local_advantages
     elif adv_estimator == 'no_estimator':
         token_level_rewards = data.batch['token_level_rewards']
         data.batch['advantages'] = token_level_rewards
@@ -399,6 +421,8 @@ def compute_data_metrics(batch, use_critic=True, reward_mode='tree'):
     if 'valid_search_stats' in batch.meta_info:
         metrics['env/number_of_valid_search'] = float(np.array(batch.meta_info['valid_search_stats'], dtype=np.int16).mean())
 
+    if 'tree_metrics' in batch.meta_info:
+        metrics.update(batch.meta_info['tree_metrics'])
 
     return metrics
 
@@ -697,7 +721,7 @@ class RayPPOTrainer(object):
             critic_cls = RayClassWithInitArgs(cls=self.role_worker_mapping[Role.Critic], config=self.config.critic)
             self.resource_pool_to_cls[resource_pool]['critic'] = critic_cls
             self.use_critic = True  
-        elif self.config.algorithm.adv_estimator in ['grpo', 'tree', 'tree_inner', 'no_estimator', 'tree_per_token', 'tree_2norm', 'rloo']:
+        elif self.config.algorithm.adv_estimator in ['grpo', 'tree', 'umcts', 'tree_inner', 'no_estimator', 'tree_per_token', 'tree_2norm', 'rloo']:
             self.use_critic = False
         else:
             raise NotImplementedError
@@ -818,6 +842,19 @@ class RayPPOTrainer(object):
             k = self.config.actor_rollout_ref.rollout.ts_k,
             reward_mode = self.config.actor_rollout_ref.rollout.reward_mode,
             expand_mode = self.config.actor_rollout_ref.rollout.expand_mode,
+            umcts_ucb_c = self.config.actor_rollout_ref.rollout.get('umcts_ucb_c', 1.0),
+            umcts_uncertainty_coef = self.config.actor_rollout_ref.rollout.get('umcts_uncertainty_coef', 1.0),
+            umcts_value_coef = self.config.actor_rollout_ref.rollout.get('umcts_value_coef', 1.0),
+            umcts_prior_coef = self.config.actor_rollout_ref.rollout.get('umcts_prior_coef', 1.0),
+            umcts_cost_coef = self.config.actor_rollout_ref.rollout.get('umcts_cost_coef', 0.0),
+            umcts_candidate_k = self.config.actor_rollout_ref.rollout.get('umcts_candidate_k', 4),
+            umcts_cluster_mode = self.config.actor_rollout_ref.rollout.get('umcts_cluster_mode', 'exact'),
+            umcts_cluster_threshold = self.config.actor_rollout_ref.rollout.get('umcts_cluster_threshold', 0.85),
+            umcts_embedding_model_path = self.config.actor_rollout_ref.rollout.get('umcts_embedding_model_path', ''),
+            umcts_confidence_tau = self.config.actor_rollout_ref.rollout.get('umcts_confidence_tau', 1.0),
+            umcts_inter_advantage_weight = self.config.actor_rollout_ref.rollout.get('umcts_inter_advantage_weight', 1.0),
+            umcts_local_advantage_weight = self.config.actor_rollout_ref.rollout.get('umcts_local_advantage_weight', 1.0),
+            umcts_gamma = self.config.actor_rollout_ref.rollout.get('umcts_gamma', 1.0),
         )
 
         generation_manager = LLMGenerationTreeSearchManager(
@@ -872,6 +909,7 @@ class RayPPOTrainer(object):
                             final_gen_batch_output = generation_manager.run_llm_loop_tree_search(
                                 gen_batch=gen_batch,
                                 initial_input_ids=first_input_ids,
+                                global_step=self.global_steps,
                             )
 
                         # final_gen_batch_output.batch.apply(lambda x: x.long(), inplace=True)
