@@ -310,15 +310,6 @@ class TreeNode:
         cost_penalty = cost_coef * node.interaction_cost
         return exploitation + uncertainty_bonus + prior_bonus - cost_penalty
 
-    def _selection_score(
-            self,
-            node: 'TreeNode',
-            value_coef: float,
-            confidence_tau: float,
-        ) -> float:
-        confidence_gate = 1.0 / (1.0 + confidence_tau * max(node.q_variance, 0.0))
-        return value_coef * node.q_value * confidence_gate
-
     def get_expand_node(
             self,
             n: int = 1,
@@ -361,7 +352,6 @@ class TreeNode:
             value_coef: float = 1.0,
             prior_coef: float = 1.0,
             cost_coef: float = 0.0,
-            confidence_tau: float = 1.0,
         ) -> List['TreeNode']:
         """
         Sample n leaves, then prune the tree (drop the unselected nodes)
@@ -377,11 +367,9 @@ class TreeNode:
             raise ValueError(f"root={self.node_uid} has no leaf candidates to sample")
 
         if mode == 'umcts':
-            # Selection favors high-value, low-variance leaves (confidence-weighted),
-            # the opposite of expansion's uncertainty-seeking PUCT score.
             candidate_nodes = sorted(
                 candidate_nodes,
-                key=lambda node: self._selection_score(node, value_coef, confidence_tau),
+                key=lambda node: self._umcts_score(node, ucb_c, uncertainty_coef, value_coef, prior_coef, cost_coef),
                 reverse=True,
             )
         else:

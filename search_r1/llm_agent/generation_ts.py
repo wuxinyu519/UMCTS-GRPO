@@ -1083,7 +1083,6 @@ class LLMGenerationTreeSearchManager:
                     value_coef=self.config.umcts_value_coef,
                     prior_coef=self.config.umcts_prior_coef,
                     cost_coef=self.config.umcts_cost_coef,
-                    confidence_tau=self.config.umcts_confidence_tau,
                 )
             final_node_list.extend(final_node_list_tmp)
 
